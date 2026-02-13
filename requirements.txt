@@ -1,0 +1,7 @@
+aiogram==3.*
+python-dotenv
+requests
+loguru
+pymysql
+beautifulsoup4
+lxml
