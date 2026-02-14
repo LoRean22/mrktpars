@@ -1,7 +1,7 @@
 const container = document.getElementById("page-container");
 const buttons = document.querySelectorAll(".bottom-nav button");
 
-const API_BASE = "http://46.253.143.163:8000";
+const API_BASE = "http://46.253.143.163";
 
 let subscriptionData = null;
 
