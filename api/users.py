@@ -70,3 +70,51 @@ def init_user(data: UserInit):
 
     finally:
         connection.close()
+
+
+
+@router.post("/users/trial")
+def activate_trial(data: dict):
+    tg_id = data.get("tg_id")
+
+    if not tg_id:
+        return {"error": "tg_id required"}
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id = %s",
+                (tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                return {"error": "user not found"}
+
+            if user["trial_used"]:
+                return {"error": "trial already used"}
+
+            expires = datetime.now() + timedelta(days=2)
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET subscription_type = %s,
+                    subscription_expires = %s,
+                    trial_used = TRUE
+                WHERE tg_id = %s
+                """,
+                ("basic", expires, tg_id)
+            )
+            connection.commit()
+
+        return {
+            "status": "trial activated",
+            "subscription_type": "basic",
+            "subscription_expires": expires
+        }
+
+    finally:
+        connection.close()
