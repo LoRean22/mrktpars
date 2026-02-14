@@ -18,8 +18,8 @@ class UserInit(BaseModel):
 def get_connection():
     return pymysql.connect(
         host="localhost",
-        user="root",
-        password="mysql199300_",  # твой пароль
+        user="mrktpars_user",
+        password="StrongPassword123!",  # твой пароль
         database="mrktpars",
         cursorclass=pymysql.cursors.DictCursor
     )
