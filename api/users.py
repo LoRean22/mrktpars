@@ -4,24 +4,34 @@ import pymysql
 
 router = APIRouter()
 
-
+# ----------------------------
+# Модель входящих данных
+# ----------------------------
 class UserInit(BaseModel):
     tg_id: int
     username: str | None = None
 
 
+# ----------------------------
+# Подключение к MySQL
+# ----------------------------
 def get_connection():
     return pymysql.connect(
         host="localhost",
         user="root",
-        password="mysql199300_",
+        password="mysql199300_",  # твой пароль
         database="mrktpars",
         cursorclass=pymysql.cursors.DictCursor
     )
 
 
+# ----------------------------
+# Инициализация пользователя
+# ----------------------------
 @router.post("/users/init")
 def init_user(data: UserInit):
+
+    print("🔥 Получен запрос:", data.dict())
 
     connection = get_connection()
 
@@ -35,6 +45,8 @@ def init_user(data: UserInit):
             )
             user = cursor.fetchone()
 
+            print("👀 Найден пользователь:", user)
+
             # Если нет — создаём
             if not user:
                 cursor.execute(
@@ -43,6 +55,8 @@ def init_user(data: UserInit):
                 )
                 connection.commit()
 
+                print("✅ Пользователь создан")
+
                 cursor.execute(
                     "SELECT * FROM users WHERE tg_id = %s",
                     (data.tg_id,)
@@ -50,8 +64,8 @@ def init_user(data: UserInit):
                 user = cursor.fetchone()
 
         return {
-            "subscription_type": user["subscription_type"],
-            "subscription_expires": user["subscription_expires"]
+            "subscription_type": user.get("subscription_type"),
+            "subscription_expires": user.get("subscription_expires")
         }
 
     finally:
