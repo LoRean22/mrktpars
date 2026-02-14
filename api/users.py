@@ -4,11 +4,10 @@ import pymysql
 
 router = APIRouter()
 
-class UserCreate(BaseModel):
-    telegram_id: int
+
+class UserInit(BaseModel):
+    tg_id: int
     username: str | None = None
-    first_name: str | None = None
-    last_name: str | None = None
 
 
 def get_connection():
@@ -22,29 +21,38 @@ def get_connection():
 
 
 @router.post("/users/init")
-def init_user(user: UserCreate):
+def init_user(data: UserInit):
+
     connection = get_connection()
+
     try:
         with connection.cursor() as cursor:
 
-            # Проверяем существует ли пользователь
+            # Проверяем есть ли пользователь
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id = %s",
-                (user.telegram_id,)
+                (data.tg_id,)
             )
-            existing = cursor.fetchone()
+            user = cursor.fetchone()
 
-            if not existing:
+            # Если нет — создаём
+            if not user:
                 cursor.execute(
-                    """
-                    INSERT INTO users (tg_id)
-                    VALUES (%s)
-                    """,
-                    (user.telegram_id,)
+                    "INSERT INTO users (tg_id) VALUES (%s)",
+                    (data.tg_id,)
                 )
                 connection.commit()
 
-        return {"status": "ok"}
+                cursor.execute(
+                    "SELECT * FROM users WHERE tg_id = %s",
+                    (data.tg_id,)
+                )
+                user = cursor.fetchone()
+
+        return {
+            "subscription_type": user["subscription_type"],
+            "subscription_expires": user["subscription_expires"]
+        }
 
     finally:
         connection.close()
