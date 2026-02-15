@@ -4,7 +4,6 @@ import pymysql
 from datetime import datetime, timedelta
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
-import asyncio
 
 router = APIRouter()
 
@@ -27,9 +26,103 @@ def get_connection():
 # MODELS
 # ----------------------------
 
+class InitUser(BaseModel):
+    tg_id: int
+    username: str | None = None
+
+
+class TrialRequest(BaseModel):
+    tg_id: int
+
+
 class RunParser(BaseModel):
     tg_id: int
     search_url: str
+
+
+# ----------------------------
+# INIT USER
+# ----------------------------
+
+@router.post("/users/init")
+def init_user(data: InitUser):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                cursor.execute(
+                    "INSERT INTO users (tg_id) VALUES (%s)",
+                    (data.tg_id,)
+                )
+                connection.commit()
+
+                cursor.execute(
+                    "SELECT * FROM users WHERE tg_id=%s",
+                    (data.tg_id,)
+                )
+                user = cursor.fetchone()
+
+        return {
+            "subscription_type": user["subscription_type"],
+            "subscription_expires": user["subscription_expires"]
+        }
+
+    finally:
+        connection.close()
+
+
+# ----------------------------
+# TRIAL
+# ----------------------------
+
+@router.post("/users/trial")
+def activate_trial(data: TrialRequest):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                return {"error": "User not found"}
+
+            if user["trial_used"] == 1:
+                return {"error": "Вы уже использовали пробный период"}
+
+            expires = datetime.now() + timedelta(days=2)
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET subscription_type=%s,
+                    subscription_expires=%s,
+                    trial_used=1
+                WHERE tg_id=%s
+                """,
+                ("basic", expires, data.tg_id)
+            )
+
+            connection.commit()
+
+        return {"status": "trial activated"}
+
+    finally:
+        connection.close()
 
 
 # ----------------------------
@@ -44,7 +137,6 @@ async def run_parser(data: RunParser):
     try:
         with connection.cursor() as cursor:
 
-            # Получаем пользователя
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id=%s",
                 (data.tg_id,)
@@ -56,20 +148,18 @@ async def run_parser(data: RunParser):
 
             user_id = user["id"]
 
-            # Проверяем cooldown
+            now = datetime.now()
+
             cursor.execute(
                 "SELECT * FROM searches WHERE user_id=%s",
                 (user_id,)
             )
             search = cursor.fetchone()
 
-            now = datetime.now()
-
             if search and search["last_run"]:
                 if now - search["last_run"] < timedelta(minutes=1):
                     return {"error": "Подождите 1 минуту"}
 
-            # Обновляем или создаем запись
             if search:
                 cursor.execute(
                     """
@@ -83,14 +173,14 @@ async def run_parser(data: RunParser):
                 cursor.execute(
                     """
                     INSERT INTO searches (user_id, search_url, last_run)
-                    VALUES (%s, %s, %s)
+                    VALUES (%s,%s,%s)
                     """,
                     (user_id, data.search_url, now)
                 )
 
             connection.commit()
 
-        # 🔥 Запускаем парсер
+        # 🔥 Запуск парсера
         parser = AvitoParser()
         items = await parser.parse_once(data.search_url)
 
@@ -102,21 +192,8 @@ async def run_parser(data: RunParser):
                 try:
                     cursor.execute(
                         """
-                        SELECT id FROM parsed_items
-                        WHERE user_id=%s AND item_id=%s
-                        """,
-                        (user_id, item.id)
-                    )
-
-                    exists = cursor.fetchone()
-
-                    if exists:
-                        continue
-
-                    cursor.execute(
-                        """
                         INSERT INTO parsed_items (user_id, item_id)
-                        VALUES (%s, %s)
+                        VALUES (%s,%s)
                         """,
                         (user_id, item.id)
                     )
@@ -124,9 +201,6 @@ async def run_parser(data: RunParser):
 
                     text = f"{item.title}\n{item.url}"
                     await send_message(data.tg_id, text)
-
-                    sent += 1
-
 
                     sent += 1
 
