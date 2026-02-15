@@ -2,146 +2,51 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 import pymysql
 from datetime import datetime, timedelta
+from avito_parser.parser import AvitoParser
+from core.telegram_sender import send_message
+import asyncio
 
 router = APIRouter()
 
+
 # ----------------------------
-# ПОДКЛЮЧЕНИЕ К БД
+# DB CONNECTION
 # ----------------------------
 
 def get_connection():
     return pymysql.connect(
         host="localhost",
-        user="mrktpars_user",   # ⚠ если создавал нового пользователя
+        user="mrktpars_user",
         password="StrongPassword123!",
         database="mrktpars",
         cursorclass=pymysql.cursors.DictCursor
     )
 
+
 # ----------------------------
 # MODELS
 # ----------------------------
 
-class InitUser(BaseModel):
-    tg_id: int
-    username: str | None = None
-
-
-class TrialRequest(BaseModel):
-    tg_id: int
-
-
-class SaveSearch(BaseModel):
+class RunParser(BaseModel):
     tg_id: int
     search_url: str
 
 
-class DeleteSearch(BaseModel):
-    tg_id: int
-
-
 # ----------------------------
-# INIT USER
+# RUN PARSER
 # ----------------------------
 
-@router.post("/users/init")
-def init_user(data: InitUser):
-    print("🔥 Получен запрос:", data.dict())
+@router.post("/users/run-parser")
+async def run_parser(data: RunParser):
 
     connection = get_connection()
 
     try:
         with connection.cursor() as cursor:
 
+            # Получаем пользователя
             cursor.execute(
-                "SELECT * FROM users WHERE tg_id = %s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            print("👀 Найден пользователь:", user)
-
-            if not user:
-                cursor.execute(
-                    "INSERT INTO users (tg_id) VALUES (%s)",
-                    (data.tg_id,)
-                )
-                connection.commit()
-
-                cursor.execute(
-                    "SELECT * FROM users WHERE tg_id = %s",
-                    (data.tg_id,)
-                )
-                user = cursor.fetchone()
-
-                print("✅ Пользователь создан")
-
-        return {
-            "subscription_type": user["subscription_type"],
-            "subscription_expires": user["subscription_expires"]
-        }
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# TRIAL SUBSCRIPTION
-# ----------------------------
-
-@router.post("/users/trial")
-def activate_trial(data: TrialRequest):
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT * FROM users WHERE tg_id = %s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                return {"error": "User not found"}
-
-            if user["trial_used"] == 1:
-                return {"error": "Вы уже использовали пробный период"}
-
-            expires = datetime.now() + timedelta(days=2)
-
-            cursor.execute(
-                """
-                UPDATE users
-                SET subscription_type = %s,
-                    subscription_expires = %s,
-                    trial_used = 1
-                WHERE tg_id = %s
-                """,
-                ("basic", expires, data.tg_id)
-            )
-
-            connection.commit()
-
-        return {"status": "trial activated"}
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# SAVE SEARCH
-# ----------------------------
-
-@router.post("/users/save-search")
-def save_search(data: SaveSearch):
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT id FROM users WHERE tg_id = %s",
+                "SELECT * FROM users WHERE tg_id=%s",
                 (data.tg_id,)
             )
             user = cursor.fetchone()
@@ -151,87 +56,84 @@ def save_search(data: SaveSearch):
 
             user_id = user["id"]
 
-            # удаляем старую ссылку
+            # Проверяем cooldown
             cursor.execute(
-                "DELETE FROM searches WHERE user_id = %s",
+                "SELECT * FROM searches WHERE user_id=%s",
                 (user_id,)
             )
-
-            # вставляем новую
-            cursor.execute(
-                "INSERT INTO searches (user_id, search_url) VALUES (%s, %s)",
-                (user_id, data.search_url)
-            )
-
-            connection.commit()
-
-        return {"status": "saved"}
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# DELETE SEARCH
-# ----------------------------
-
-@router.post("/users/delete-search")
-def delete_search(data: DeleteSearch):
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT id FROM users WHERE tg_id = %s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                return {"error": "User not found"}
-
-            cursor.execute(
-                "DELETE FROM searches WHERE user_id = %s",
-                (user["id"],)
-            )
-
-            connection.commit()
-
-        return {"status": "deleted"}
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# GET SEARCH
-# ----------------------------
-
-@router.post("/users/get-search")
-def get_search(data: DeleteSearch):
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT id FROM users WHERE tg_id = %s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                return {"error": "User not found"}
-
-            cursor.execute(
-                "SELECT search_url FROM searches WHERE user_id = %s",
-                (user["id"],)
-            )
-
             search = cursor.fetchone()
 
-        return search if search else {}
+            now = datetime.now()
+
+            if search and search["last_run"]:
+                if now - search["last_run"] < timedelta(minutes=1):
+                    return {"error": "Подождите 1 минуту"}
+
+            # Обновляем или создаем запись
+            if search:
+                cursor.execute(
+                    """
+                    UPDATE searches
+                    SET search_url=%s, last_run=%s
+                    WHERE user_id=%s
+                    """,
+                    (data.search_url, now, user_id)
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO searches (user_id, search_url, last_run)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (user_id, data.search_url, now)
+                )
+
+            connection.commit()
+
+        # 🔥 Запускаем парсер
+        parser = AvitoParser()
+        items = await parser.parse_once(data.search_url)
+
+        sent = 0
+
+        with connection.cursor() as cursor:
+            for item in items:
+
+                try:
+                    cursor.execute(
+                        """
+                        SELECT id FROM parsed_items
+                        WHERE user_id=%s AND item_id=%s
+                        """,
+                        (user_id, item.id)
+                    )
+
+                    exists = cursor.fetchone()
+
+                    if exists:
+                        continue
+
+                    cursor.execute(
+                        """
+                        INSERT INTO parsed_items (user_id, item_id)
+                        VALUES (%s, %s)
+                        """,
+                        (user_id, item.id)
+                    )
+                    connection.commit()
+
+                    text = f"{item.title}\n{item.url}"
+                    await send_message(data.tg_id, text)
+
+                    sent += 1
+
+
+                    sent += 1
+
+                except:
+                    continue
+
+        return {"status": "ok", "sent": sent}
 
     finally:
         connection.close()

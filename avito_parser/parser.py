@@ -2,8 +2,8 @@ from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from external.avito_parser.playwright_client import AvitoPlaywrightClient
-from external.avito_parser.models import AvitoItem
+from avito_parser.playwright_client import AvitoPlaywrightClient
+from avito_parser.models import AvitoItem
 
 
 class AvitoParser:
@@ -22,10 +22,7 @@ class AvitoParser:
         soup = BeautifulSoup(html, "lxml")
 
         items: List[AvitoItem] = []
-        cards = soup.select(
-            '[data-marker="item"], div[data-item-id]'
-        )
-
+        cards = soup.select('[data-marker="item"], div[data-item-id]')
 
         logger.info(f"AvitoParser: найдено карточек: {len(cards)}")
 

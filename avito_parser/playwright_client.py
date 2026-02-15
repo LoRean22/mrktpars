@@ -15,7 +15,7 @@ class AvitoPlaywrightClient:
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,   # 🔥 ВАЖНО
+                headless=True,   # 🔥 ВАЖНО
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--start-maximized",
