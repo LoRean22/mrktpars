@@ -123,9 +123,6 @@ class AvitoParser:
         time.sleep(random.uniform(2.0, 4.0))
         url = self.clean_url(url)
 
-        if self.dynamic_limit == 1:
-            self.warmup(url)
-
         logger.info(f"[REQUESTS] Парсинг {url}")
 
         try:
