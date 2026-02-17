@@ -273,23 +273,29 @@ async def run_parser(data: RunParser):
             connection.commit()
 
         # ---------- БЕРЕМ ПРОКСИ ----------
+        proxy_value = None
+
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM proxies WHERE is_busy=0 LIMIT 1"
             )
             proxy_row = cursor.fetchone()
+            
 
-            if not proxy_row:
+            if proxy_row:
+                proxy_id = proxy_row["id"]
+                proxy_value = proxy_row["proxy"]
+
+                cursor.execute(
+                    "UPDATE proxies SET is_busy=1 WHERE id=%s",
+                    (proxy_id,)
+                )
+                connection.commit()
+            else:
+                print("Нет свободных прокси")
                 return {"error": "Нет свободных прокси"}
-
-            proxy_id = proxy_row["id"]
-            proxy_value = proxy_row["proxy"]
-
-            cursor.execute(
-                "UPDATE proxies SET is_busy=1 WHERE id=%s",
-                (proxy_id,)
-            )
-            connection.commit()
+            
+            
 
         # ---------- ПАРСИНГ ----------
         parser = AvitoParser(proxy=proxy_value)
