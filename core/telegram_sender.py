@@ -16,3 +16,16 @@ async def send_message(tg_id: int, text: str):
         )
     except Exception as e:
         print("Telegram send error:", e)
+
+
+    r = requests.post(
+        f"{BASE_URL}/sendMessage",
+        json={
+            "chat_id": tg_id,
+            "text": text
+        },
+        timeout=10
+    )
+
+    print("TG STATUS:", r.status_code)
+    print("TG RESPONSE:", r.text)
