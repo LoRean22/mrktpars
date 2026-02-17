@@ -52,13 +52,16 @@ class AvitoParser:
 
     def parse_once(self, url: str) -> List[AvitoItem]:
 
+        logger.info(f"Parser: начинаю парсинг {url}")
+
         time.sleep(random.uniform(0.8, 1.5))
+
         url = self.clean_url(url)
 
         response = self.session.get(url, timeout=20)
 
         if response.status_code != 200:
-            logger.warning(f"Status {response.status_code}")
+            logger.warning(f"Статус {response.status_code}")
             return []
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -73,6 +76,9 @@ class AvitoParser:
                     continue
 
                 href = link.get("href")
+                if not href:
+                    continue
+
                 if href.startswith("/"):
                     href = "https://www.avito.ru" + href
 
@@ -81,7 +87,6 @@ class AvitoParser:
                     continue
 
                 item_id = m.group(1)
-
                 short_url = f"https://avito.ru/{item_id}"
 
                 title = link.get_text(strip=True)
@@ -93,11 +98,35 @@ class AvitoParser:
                     if digits:
                         price = int(digits)
 
-                # ---- ГЛАВНАЯ ФОТО ----
-                img_tag = card.select_one("img")
+                # -------- ДОПОЛНИТЕЛЬНЫЙ ЗАПРОС В КАРТОЧКУ --------
+                seller_name = None
+                seller_type = None
+                seller_since = None
                 image_url = None
-                if img_tag:
-                    image_url = img_tag.get("src")
+
+                detail_resp = self.session.get(href, timeout=20)
+                if detail_resp.status_code == 200:
+                    detail_soup = BeautifulSoup(detail_resp.text, "lxml")
+
+                    # имя продавца
+                    seller_block = detail_soup.select_one('[data-marker="seller-info/name"]')
+                    if seller_block:
+                        seller_name = seller_block.get_text(strip=True)
+
+                    # тип продавца
+                    seller_type_block = detail_soup.select_one('[data-marker="seller-info/type"]')
+                    if seller_type_block:
+                        seller_type = seller_type_block.get_text(strip=True)
+
+                    # на авито с ...
+                    seller_since_block = detail_soup.select_one('[data-marker="seller-info/start-date"]')
+                    if seller_since_block:
+                        seller_since = seller_since_block.get_text(strip=True)
+
+                    # главное фото
+                    img = detail_soup.select_one('img[data-marker="image/image"]')
+                    if img:
+                        image_url = img.get("src")
 
                 items.append(
                     AvitoItem(
@@ -105,7 +134,10 @@ class AvitoParser:
                         title=title,
                         price=price,
                         url=short_url,
-                        image_url=image_url
+                        image_url=image_url,
+                        seller_name=seller_name,
+                        seller_type=seller_type,
+                        seller_since=seller_since
                     )
                 )
 
