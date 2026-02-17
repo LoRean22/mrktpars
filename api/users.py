@@ -224,6 +224,9 @@ def activate_trial(data: TrialRequest):
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
 
+    print("RUN_PARSER CALLED")
+
+
     connection = get_connection()
     proxy_id = None
 
@@ -308,7 +311,7 @@ async def run_parser(data: RunParser):
                     print("SENDING TO TG:", data.tg_id)
                     print("TEXT:", text)
 
-                    # await send_message(data.tg_id, text)
+                    await send_message(data.tg_id, text)
 
                     sent += 1
 
@@ -329,6 +332,12 @@ async def run_parser(data: RunParser):
                 connection.commit()
 
         connection.close()
+
+
+        parser = AvitoParser(proxy=proxy_value)
+        items = parser.parse_once(data.search_url)
+
+        print("ITEMS COUNT:", len(items))
 
 
 # ----------------------------
