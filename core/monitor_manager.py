@@ -134,7 +134,8 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 print(f"[{tg_id}] Sending new item:", item.id)
 
-                send_message(tg_id, text)
+                send_message(tg_id, text, item.image_url)
+
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")

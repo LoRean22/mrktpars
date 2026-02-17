@@ -5,7 +5,6 @@ from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
-from datetime import datetime, timedelta
 import re
 
 from avito_parser.models import AvitoItem
@@ -25,13 +24,10 @@ HEADERS = {
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
-        self.proxy = proxy
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
         if proxy:
-            logger.info(f"Parser: использую прокси {proxy}")
-
             parts = proxy.split(":")
 
             if len(parts) == 4:
@@ -48,7 +44,6 @@ class AvitoParser:
                 "https": proxy_url,
             })
 
-
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
@@ -57,30 +52,17 @@ class AvitoParser:
 
     def parse_once(self, url: str) -> List[AvitoItem]:
 
-        logger.info(f"Parser: начинаю парсинг {url}")
-
         time.sleep(random.uniform(0.8, 1.5))
-
         url = self.clean_url(url)
 
         response = self.session.get(url, timeout=20)
 
-        if response.status_code == 429:
-            logger.warning("IP забанен (429)")
-            return []
-
         if response.status_code != 200:
-            logger.warning(f"Статус {response.status_code}")
-            return []
-
-        if "Доступ ограничен" in response.text:
-            logger.warning("Avito ограничил доступ")
+            logger.warning(f"Status {response.status_code}")
             return []
 
         soup = BeautifulSoup(response.text, "lxml")
         cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
-
-        logger.info(f"Parser: найдено карточек {len(cards)}")
 
         items: List[AvitoItem] = []
 
@@ -91,9 +73,6 @@ class AvitoParser:
                     continue
 
                 href = link.get("href")
-                if not href:
-                    continue
-
                 if href.startswith("/"):
                     href = "https://www.avito.ru" + href
 
@@ -102,6 +81,8 @@ class AvitoParser:
                     continue
 
                 item_id = m.group(1)
+
+                short_url = f"https://avito.ru/{item_id}"
 
                 title = link.get_text(strip=True)
 
@@ -112,12 +93,19 @@ class AvitoParser:
                     if digits:
                         price = int(digits)
 
+                # ---- ГЛАВНАЯ ФОТО ----
+                img_tag = card.select_one("img")
+                image_url = None
+                if img_tag:
+                    image_url = img_tag.get("src")
+
                 items.append(
                     AvitoItem(
                         id=item_id,
                         title=title,
                         price=price,
-                        url=href
+                        url=short_url,
+                        image_url=image_url
                     )
                 )
 
