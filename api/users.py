@@ -7,6 +7,8 @@ from core.telegram_sender import send_message
 
 router = APIRouter()
 
+ADMIN_TG_ID = 5849724815 
+
 
 # ----------------------------
 # DB CONNECTION
@@ -20,6 +22,98 @@ def get_connection():
         database="mrktpars",
         cursorclass=pymysql.cursors.DictCursor
     )
+
+
+
+class AdminKey(BaseModel):
+    tg_id: int
+    subscription_type: str
+    expires_days: int
+
+class AddProxy(BaseModel):
+    tg_id: int
+    proxy: str
+
+def is_admin(tg_id: int):
+    return tg_id == ADMIN_TG_ID
+
+
+@router.post("/admin/create-key")
+def create_key(data: AdminKey):
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    import secrets
+
+    new_key = secrets.token_hex(16)
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO subscription_keys (`key`, subscription_type, expires_days)
+                VALUES (%s, %s, %s)
+            """, (new_key, data.subscription_type, data.expires_days))
+            connection.commit()
+
+        return {"key": new_key}
+
+    finally:
+        connection.close()
+
+
+@router.post("/admin/add-proxy")
+def add_proxy(data: AddProxy):
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO proxies (proxy)
+                VALUES (%s)
+            """, (data.proxy,))
+            connection.commit()
+
+        return {"status": "proxy added"}
+
+    finally:
+        connection.close()
+
+
+@router.post("/admin/proxy-stats")
+class AdminRequest(BaseModel):
+    tg_id: int
+
+@router.post("/admin/proxy-stats")
+def proxy_stats(data: AdminRequest):
+
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) as total FROM proxies")
+            total = cursor.fetchone()["total"]
+
+            cursor.execute("SELECT COUNT(*) as busy FROM proxies WHERE is_busy=1")
+            busy = cursor.fetchone()["busy"]
+
+        return {
+            "total": total,
+            "busy": busy
+        }
+
+    finally:
+        connection.close()
 
 
 # ----------------------------
