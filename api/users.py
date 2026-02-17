@@ -2,17 +2,19 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 import pymysql
 from datetime import datetime, timedelta
-import asyncio
-import secrets
-
+from avito_parser.parser import AvitoParser
+from core.telegram_sender import send_message
 from core.monitor_manager import monitor_worker, active_monitors
+import asyncio
 
 router = APIRouter()
 
 ADMIN_TG_ID = 5849724815
 
 
-# ---------------- DB ----------------
+# ----------------------------
+# DB CONNECTION
+# ----------------------------
 
 def get_connection():
     return pymysql.connect(
@@ -24,11 +26,9 @@ def get_connection():
     )
 
 
-def is_admin(tg_id: int):
-    return tg_id == ADMIN_TG_ID
-
-
-# ---------------- MODELS ----------------
+# ----------------------------
+# MODELS
+# ----------------------------
 
 class ActivateKey(BaseModel):
     tg_id: int
@@ -64,13 +64,21 @@ class RunParser(BaseModel):
     search_url: str
 
 
-# ---------------- ADMIN ----------------
+def is_admin(tg_id: int):
+    return tg_id == ADMIN_TG_ID
+
+
+# ----------------------------
+# ADMIN
+# ----------------------------
 
 @router.post("/admin/create-key")
 def create_key(data: AdminKey):
+
     if not is_admin(data.tg_id):
         return {"error": "Not allowed"}
 
+    import secrets
     new_key = secrets.token_hex(16)
 
     connection = get_connection()
@@ -81,13 +89,16 @@ def create_key(data: AdminKey):
                 VALUES (%s, %s, %s, 0)
             """, (new_key, data.subscription_type, data.expires_days))
             connection.commit()
+
         return {"key": new_key}
+
     finally:
         connection.close()
 
 
 @router.post("/admin/add-proxy")
 def add_proxy(data: AddProxy):
+
     if not is_admin(data.tg_id):
         return {"error": "Not allowed"}
 
@@ -99,13 +110,16 @@ def add_proxy(data: AddProxy):
                 VALUES (%s, 0)
             """, (data.proxy,))
             connection.commit()
+
         return {"status": "proxy added"}
+
     finally:
         connection.close()
 
 
 @router.post("/admin/proxy-stats")
 def proxy_stats(data: AdminRequest):
+
     if not is_admin(data.tg_id):
         return {"error": "Not allowed"}
 
@@ -119,42 +133,66 @@ def proxy_stats(data: AdminRequest):
             busy = cursor.fetchone()["busy"]
 
         return {"total": total, "busy": busy}
+
     finally:
         connection.close()
 
 
-# ---------------- INIT USER ----------------
+# ----------------------------
+# INIT USER
+# ----------------------------
 
 @router.post("/users/init")
 def init_user(data: InitUser):
+
     connection = get_connection()
+
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE tg_id=%s", (data.tg_id,))
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
             user = cursor.fetchone()
 
             if not user:
-                cursor.execute("INSERT INTO users (tg_id) VALUES (%s)", (data.tg_id,))
+                cursor.execute(
+                    "INSERT INTO users (tg_id) VALUES (%s)",
+                    (data.tg_id,)
+                )
                 connection.commit()
-                cursor.execute("SELECT * FROM users WHERE tg_id=%s", (data.tg_id,))
+
+                cursor.execute(
+                    "SELECT * FROM users WHERE tg_id=%s",
+                    (data.tg_id,)
+                )
                 user = cursor.fetchone()
 
         return {
             "subscription_type": user["subscription_type"],
             "subscription_expires": user["subscription_expires"]
         }
+
     finally:
         connection.close()
 
 
-# ---------------- TRIAL ----------------
+# ----------------------------
+# TRIAL
+# ----------------------------
 
 @router.post("/users/trial")
 def activate_trial(data: TrialRequest):
+
     connection = get_connection()
+
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE tg_id=%s", (data.tg_id,))
+
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
             user = cursor.fetchone()
 
             if not user:
@@ -172,42 +210,63 @@ def activate_trial(data: TrialRequest):
                     trial_used=1
                 WHERE tg_id=%s
             """, ("basic", expires, data.tg_id))
+
             connection.commit()
 
         return {"status": "trial activated"}
+
     finally:
         connection.close()
 
 
-# ---------------- RUN PARSER ----------------
+# ----------------------------
+# RUN PARSER
+# ----------------------------
+
+# ----------------------------
+# RUN PARSER
+# ----------------------------
 
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
+
     print("START MONITOR REQUEST:", data.tg_id)
 
     connection = get_connection()
+
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE tg_id=%s", (data.tg_id,))
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
             user = cursor.fetchone()
 
         if not user:
             return {"error": "User not found"}
 
+        # ---- сохраняем ссылку ----
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM searches WHERE tg_id=%s", (data.tg_id,))
+            cursor.execute("""
+                DELETE FROM searches WHERE tg_id=%s
+            """, (data.tg_id,))
+
             cursor.execute("""
                 INSERT INTO searches (tg_id, search_url, is_active)
                 VALUES (%s, %s, 1)
             """, (data.tg_id, data.search_url))
+
             connection.commit()
 
+        # ---- если уже запущен монитор — не запускаем второй ----
         if data.tg_id in active_monitors:
             return {"status": "already running"}
 
+        # ---- запускаем фоновую задачу ----
         task = asyncio.create_task(
             monitor_worker(data.tg_id, data.search_url)
         )
+
         active_monitors[data.tg_id] = task
 
         return {"status": "monitor started"}
@@ -216,23 +275,38 @@ async def run_parser(data: RunParser):
         connection.close()
 
 
-# ---------------- ACTIVATE KEY ----------------
+
+
+# ----------------------------
+# ACTIVATE KEY
+# ----------------------------
 
 @router.post("/users/activate-key")
 def activate_key(data: ActivateKey):
+
     connection = get_connection()
+
     try:
         with connection.cursor() as cursor:
 
-            cursor.execute("SELECT * FROM users WHERE tg_id=%s", (data.tg_id,))
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
             user = cursor.fetchone()
+
             if not user:
                 return {"error": "User not found"}
 
-            cursor.execute("SELECT * FROM subscription_keys WHERE `key`=%s", (data.key,))
+            cursor.execute(
+                "SELECT * FROM subscription_keys WHERE `key`=%s",
+                (data.key,)
+            )
             key_row = cursor.fetchone()
+
             if not key_row:
                 return {"error": "Ключ не найден"}
+
             if key_row["used"] == 1:
                 return {"error": "Ключ уже использован"}
 
@@ -258,4 +332,4 @@ def activate_key(data: ActivateKey):
         return {"status": "activated"}
 
     finally:
-        connection.close()
+        connection.close()           
