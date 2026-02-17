@@ -156,9 +156,11 @@ async def monitor_worker(tg_id: int, search_url: str):
             async with connection.cursor() as cursor:
                 for item in items:
                     await cursor.execute("""
-                        INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
+                        INSERT INTO parsed_items (tg_id, item_id, created_at)
                         VALUES (%s, %s, NOW())
+                        ON DUPLICATE KEY UPDATE item_id = item_id
                     """, (tg_id, item.id))
+
 
         # ---------- MAIN LOOP ----------
         while True:
