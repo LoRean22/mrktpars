@@ -1,66 +1,115 @@
+import requests
+import random
+import time
 from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
+from urllib.parse import urlparse, parse_qs, urlencode
+from datetime import datetime, timedelta
+import re
 
-from avito_parser.playwright_client import AvitoPlaywrightClient
 from avito_parser.models import AvitoItem
+
+MAX_ITEMS = 20
+
+HEADERS = {
+    "User-Agent": random.choice([
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+    ]),
+    "Accept-Language": "ru-RU,ru;q=0.9",
+}
 
 
 class AvitoParser:
-    """
-    ASYNC Avito парсер.
-    1 вызов = 1 проход.
-    """
 
     def __init__(self, proxy: str | None = None):
-        self.client = AvitoPlaywrightClient(proxy=proxy)
+        self.proxy = proxy
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
 
-    async def parse_once(self, search_url: str) -> List[AvitoItem]:
-        logger.info(f"AvitoParser: начинаю парсинг {search_url}")
+        if proxy:
+            logger.info(f"Parser: использую прокси {proxy}")
 
-        html = await self.client.get_html(search_url)
-        soup = BeautifulSoup(html, "lxml")
+            self.session.proxies.update({
+                "http": f"http://{proxy}",
+                "https": f"http://{proxy}",
+            })
+
+    def clean_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query["s"] = ["104"]
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
+
+    def parse_once(self, url: str) -> List[AvitoItem]:
+
+        logger.info(f"Parser: начинаю парсинг {url}")
+
+        time.sleep(random.uniform(0.8, 1.5))
+
+        url = self.clean_url(url)
+
+        response = self.session.get(url, timeout=20)
+
+        if response.status_code == 429:
+            logger.warning("IP забанен (429)")
+            return []
+
+        if response.status_code != 200:
+            logger.warning(f"Статус {response.status_code}")
+            return []
+
+        if "Доступ ограничен" in response.text:
+            logger.warning("Avito ограничил доступ")
+            return []
+
+        soup = BeautifulSoup(response.text, "lxml")
+        cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
+
+        logger.info(f"Parser: найдено карточек {len(cards)}")
 
         items: List[AvitoItem] = []
-        cards = soup.select('[data-marker="item"], div[data-item-id]')
-
-        logger.info(f"AvitoParser: найдено карточек: {len(cards)}")
 
         for card in cards:
             try:
-                item_id = card.get("data-item-id")
-                if not item_id:
+                link = card.select_one('a[data-marker="item-title"]')
+                if not link:
                     continue
 
-                title_tag = card.select_one('[data-marker="item-title"]')
-                title = title_tag.text.strip() if title_tag else "Без названия"
+                href = link.get("href")
+                if not href:
+                    continue
 
-                price = 0
+                if href.startswith("/"):
+                    href = "https://www.avito.ru" + href
+
+                m = re.search(r'_(\d+)', href)
+                if not m:
+                    continue
+
+                item_id = m.group(1)
+
+                title = link.get_text(strip=True)
+
                 price_tag = card.select_one('[data-marker="item-price"]')
+                price = 0
                 if price_tag:
                     digits = "".join(c for c in price_tag.text if c.isdigit())
                     if digits:
                         price = int(digits)
 
-                link_tag = card.select_one('a[data-marker="item-title"]')
-                if not link_tag or not link_tag.get("href"):
-                    continue
-
-                url = link_tag["href"]
-                if url.startswith("/"):
-                    url = "https://www.avito.ru" + url
-
                 items.append(
                     AvitoItem(
-                        id=str(item_id),
+                        id=item_id,
                         title=title,
                         price=price,
-                        url=url,
+                        url=href
                     )
                 )
 
-            except Exception:
-                logger.exception("Ошибка при разборе карточки")
+            except Exception as e:
+                logger.exception(f"Ошибка карточки: {e}")
 
-        logger.info(f"AvitoParser: успешно разобрано {len(items)} объявлений")
         return items
