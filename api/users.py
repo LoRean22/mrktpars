@@ -88,7 +88,6 @@ def add_proxy(data: AddProxy):
         connection.close()
 
 
-@router.post("/admin/proxy-stats")
 class AdminRequest(BaseModel):
     tg_id: int
 
