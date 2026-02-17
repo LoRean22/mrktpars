@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from loguru import logger
-from core.http_client import http_session
+from core.http_client import http_session, init_http_session
+
 
 from avito_parser.models import AvitoItem
 
@@ -36,6 +37,10 @@ class AvitoParser:
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
     async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
+
+        if http_session is None:
+            logger.warning("HTTP session was None → initializing manually")
+            await init_http_session()
 
         await asyncio.sleep(random.uniform(0.8, 1.5))  # возвращаем human delay
 
