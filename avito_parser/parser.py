@@ -1,49 +1,78 @@
+import requests
 import random
 import re
+import time
 from typing import List, Tuple
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse, parse_qs, urlencode
 from loguru import logger
 
 from avito_parser.models import AvitoItem
-from core.browser_manager import browser_manager
 
 MAX_ITEMS = 20
 
 
+def get_headers():
+    return {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+        ]),
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
 class AvitoParser:
 
-    async def parse_once(self, url: str, proxy: str | None = None) -> Tuple[List[AvitoItem], int]:
+    def __init__(self, proxy: str | None = None):
+        self.session = requests.Session()
+        self.session.headers.update(get_headers())
 
-        context = await browser_manager.new_context(proxy)
-        page = await context.new_page()
+        if proxy:
+            parts = proxy.split(":")
+            if len(parts) == 4:
+                ip, port, login, password = parts
+                proxy_url = f"http://{login}:{password}@{ip}:{port}"
+            elif len(parts) == 2:
+                ip, port = parts
+                proxy_url = f"http://{ip}:{port}"
+            else:
+                raise ValueError("Invalid proxy format")
 
-        # скрываем webdriver
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
+            self.session.proxies.update({
+                "http": proxy_url,
+                "https": proxy_url
             })
-        """)
+
+    def clean_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query["s"] = ["104"]
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
+
+    def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
+
+        url = self.clean_url(url)
 
         try:
-            logger.info(f"[PLAYWRIGHT] Opening {url}")
+            time.sleep(random.uniform(1.0, 2.5))  # анти-детект
 
-            response = await page.goto(url, wait_until="networkidle")
+            response = self.session.get(url, timeout=20)
 
-            status = response.status if response else 0
-            logger.info(f"[PLAYWRIGHT] Status {status}")
-
-            # имитация человека
-            await page.wait_for_timeout(random.randint(2000, 4000))
-            await page.mouse.move(random.randint(100, 400), random.randint(100, 400))
-            await page.mouse.wheel(0, random.randint(400, 1200))
-            await page.wait_for_timeout(random.randint(1000, 3000))
-
-            html = await page.content()
+            status = response.status_code
+            logger.info(f"[REQUESTS] Status {status}")
 
             if status != 200:
                 return [], status
 
-            soup = BeautifulSoup(html, "lxml")
+            if "Доступ ограничен" in response.text:
+                logger.warning("Access restricted")
+                return [], 403
+
+            soup = BeautifulSoup(response.text, "lxml")
             cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
 
             items: List[AvitoItem] = []
@@ -83,14 +112,12 @@ class AvitoParser:
                     )
                 )
 
-            logger.info(f"[PLAYWRIGHT] Found {len(items)} items")
+            logger.info(f"[REQUESTS] Found {len(items)} items")
 
             return items, 200
 
+        except requests.exceptions.Timeout:
+            return [], 408
         except Exception as e:
-            logger.exception(f"[PLAYWRIGHT ERROR] {e}")
+            logger.exception(f"[REQUESTS ERROR] {e}")
             return [], 500
-
-        finally:
-            await page.close()
-            await context.close()
