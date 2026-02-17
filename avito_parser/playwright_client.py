@@ -11,44 +11,38 @@ class AvitoPlaywrightClient:
         logger.info(f"Playwright: открываю {url}")
         logger.info(f"Playwright: прокси = {self.proxy}")
 
-        html = await page.content()
-
-        # 🔥 ДИАГНОСТИКА
-        with open("debug_avito.html", "w", encoding="utf-8") as f:
-            f.write(html)
-
-
         async with async_playwright() as p:
 
             launch_args = {
-                "headless": True,  # 🔥 ВАЖНО для VPS
+                "headless": True,
                 "args": [
-                    "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
                 ],
             }
 
-            # 🔥 Подключаем прокси
+            # 🔥 ЕСЛИ есть прокси — правильно передаем
             if self.proxy:
                 parts = self.proxy.split(":")
+
                 if len(parts) == 4:
-                    ip, port, login, password = parts
+                    host, port, login, password = parts
                     launch_args["proxy"] = {
-                        "server": f"http://{ip}:{port}",
+                        "server": f"http://{host}:{port}",
                         "username": login,
                         "password": password,
                     }
-                elif len(parts) == 2:
-                    ip, port = parts
+                else:
+                    host, port = parts
                     launch_args["proxy"] = {
-                        "server": f"http://{ip}:{port}",
+                        "server": f"http://{host}:{port}"
                     }
 
             browser = await p.chromium.launch(**launch_args)
 
             context = await browser.new_context(
-                viewport={"width": 1366, "height": 768},
+                viewport={"width": 1280, "height": 800},
                 locale="ru-RU",
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -59,19 +53,21 @@ class AvitoPlaywrightClient:
 
             page = await context.new_page()
 
-            # 🔥 Убираем webdriver
-            await page.add_init_script("""
+            await page.evaluate("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
-                });
+                })
             """)
 
-            await page.goto(url, timeout=60000)
+            await page.goto(url, timeout=30000)
 
-            # Ждём рендер
-            await page.wait_for_timeout(6000)
+            await page.wait_for_timeout(5000)
 
             html = await page.content()
+
+            # 🔥 Диагностика
+            with open("debug_avito.html", "w", encoding="utf-8") as f:
+                f.write(html)
 
             await browser.close()
 
