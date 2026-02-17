@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import pymysql
 
 from avito_parser.parser import AvitoParser
@@ -7,7 +7,7 @@ from core.telegram_sender import send_message
 
 
 # -------------------------
-# DB CONNECTION
+# DB
 # -------------------------
 
 def get_connection():
@@ -20,15 +20,11 @@ def get_connection():
     )
 
 
-# -------------------------
-# ACTIVE TASKS
-# -------------------------
-
 active_monitors = {}
 
 
 # -------------------------
-# PROXY ROTATION
+# PROXY SYSTEM
 # -------------------------
 
 def get_next_proxy():
@@ -38,6 +34,7 @@ def get_next_proxy():
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM proxies
+                WHERE (is_banned=0 OR banned_until < NOW() OR banned_until IS NULL)
                 ORDER BY last_used_at IS NULL DESC, last_used_at ASC
                 LIMIT 1
             """)
@@ -54,7 +51,27 @@ def get_next_proxy():
 
             connection.commit()
 
-            return proxy["proxy"]
+            return proxy
+
+    finally:
+        connection.close()
+
+
+def mark_proxy_banned(proxy_id):
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE proxies
+                SET is_banned=1,
+                    banned_until=%s
+                WHERE id=%s
+            """, (datetime.now() + timedelta(minutes=10), proxy_id))
+
+            connection.commit()
+
+        print(f"[PROXY BANNED] ID {proxy_id}")
 
     finally:
         connection.close()
@@ -83,9 +100,13 @@ async def monitor_worker(tg_id: int, search_url: str):
     connection = get_connection()
 
     try:
-        # ---- ПЕРВИЧНЫЙ ПРОГРЕВ (БЕЗ ОТПРАВКИ) ----
-        proxy = get_next_proxy()
-        parser = AvitoParser(proxy=proxy)
+        # -------- ПРОГРЕВ --------
+        proxy_row = get_next_proxy()
+        if not proxy_row:
+            print("NO PROXY FOR INIT")
+            return
+
+        parser = AvitoParser(proxy=proxy_row["proxy"])
         items = parser.parse_once(search_url)
 
         for item in items:
@@ -98,20 +119,46 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         print(f"[MONITOR INIT DONE] {tg_id}")
 
-        # ---- ОСНОВНОЙ ЦИКЛ ----
+        # -------- ОСНОВНОЙ ЦИКЛ --------
         while True:
             await asyncio.sleep(30)
 
-            proxy = get_next_proxy()
-            if not proxy:
-                print("NO PROXY AVAILABLE")
+            retry_count = 0
+
+            while retry_count < 5:
+                proxy_row = get_next_proxy()
+
+                if not proxy_row:
+                    print("NO AVAILABLE PROXY")
+                    break
+
+                proxy_id = proxy_row["id"]
+                proxy_value = proxy_row["proxy"]
+
+                print(f"[{tg_id}] Using proxy:", proxy_value)
+
+                parser = AvitoParser(proxy=proxy_value)
+                items = parser.parse_once(search_url)
+
+                # если 429 → parser вернёт []
+                # но нужно проверить статус внутри parser
+                # проще — если items пусто и есть 429 в логике — считаем бан
+
+                if items == []:
+                    print(f"[{tg_id}] Proxy likely banned:", proxy_value)
+                    mark_proxy_banned(proxy_id)
+                    retry_count += 1
+                    continue
+
+                # если всё ок — выходим из retry
+                break
+
+            # если вообще ничего не получилось
+            if retry_count == 5:
+                print("ALL PROXIES FAILED")
                 continue
 
-            print(f"[{tg_id}] Using proxy: {proxy}")
-
-            parser = AvitoParser(proxy=proxy)
-            items = parser.parse_once(search_url)
-
+            # -------- отправка новых --------
             for item in items:
                 with connection.cursor() as cursor:
                     cursor.execute("""
@@ -132,7 +179,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 text = format_message(item)
 
-                print(f"[{tg_id}] Sending new item:", item.id)
+                print(f"[{tg_id}] NEW ITEM:", item.id)
 
                 send_message(tg_id, text)
 
