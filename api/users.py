@@ -23,7 +23,9 @@ def get_connection():
         cursorclass=pymysql.cursors.DictCursor
     )
 
-
+class ActivateKey(BaseModel):
+    tg_id: int
+    key: str
 
 class AdminKey(BaseModel):
     tg_id: int
@@ -302,6 +304,73 @@ async def run_parser(data: RunParser):
                     continue
 
         return {"status": "ok", "sent": sent}
+
+    finally:
+        connection.close()
+
+# ----------------------------
+# ACTIVATE KEY
+# ----------------------------
+
+@router.post("/users/activate-key")
+def activate_key(data: ActivateKey):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            # Проверяем пользователя
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                return {"error": "User not found"}
+
+            # Проверяем ключ
+            cursor.execute(
+                "SELECT * FROM subscription_keys WHERE `key`=%s",
+                (data.key,)
+            )
+            key_row = cursor.fetchone()
+
+            if not key_row:
+                return {"error": "Ключ не найден"}
+
+            if key_row["used"] == 1:
+                return {"error": "Ключ уже использован"}
+
+            # Активируем подписку
+            expires = datetime.now() + timedelta(days=key_row["expires_days"])
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET subscription_type=%s,
+                    subscription_expires=%s
+                WHERE tg_id=%s
+                """,
+                (key_row["subscription_type"], expires, data.tg_id)
+            )
+
+            # Помечаем ключ как использованный
+            cursor.execute(
+                """
+                UPDATE subscription_keys
+                SET used=1,
+                    used_by=%s,
+                    used_at=%s
+                WHERE id=%s
+                """,
+                (user["id"], datetime.now(), key_row["id"])
+            )
+
+            connection.commit()
+
+        return {"status": "activated"}
 
     finally:
         connection.close()
