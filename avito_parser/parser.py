@@ -97,7 +97,7 @@ class AvitoParser:
                 if href.startswith("/"):
                     href = "https://www.avito.ru" + href
 
-                m = re.search(r'_(\d+)', href)
+                m = re.search(r'_(\d+)$', href.split("?")[0])
                 if not m:
                     continue
 
