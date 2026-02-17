@@ -120,12 +120,9 @@ class AvitoParser:
 
     def parse_once(self, url: str):
 
-        # стартовая задержка
         time.sleep(random.uniform(2.0, 4.0))
-
         url = self.clean_url(url)
 
-        # если первый запуск — прогреваем
         if self.dynamic_limit == 1:
             self.warmup(url)
 
@@ -145,20 +142,18 @@ class AvitoParser:
             return [], 429
 
         if status == 403:
-            logger.warning("403 Forbidden (proxy blocked or tunnel error)")
+            logger.warning("403 Forbidden")
             return [], 403
 
         if status != 200:
             return [], status
 
         if "Доступ ограничен" in response.text:
-            logger.warning("Avito ограничил доступ")
             return [], 403
 
         soup = BeautifulSoup(response.text, "lxml")
         cards = soup.select('[data-marker="item"]')
 
-        # динамический лимит
         cards = cards[:self.dynamic_limit]
 
         if self.dynamic_limit < self.max_limit:
@@ -196,9 +191,7 @@ class AvitoParser:
                         price = int(digits)
 
                 image_tag = card.select_one("img")
-                image_url = None
-                if image_tag:
-                    image_url = image_tag.get("src")
+                image_url = image_tag.get("src") if image_tag else None
 
                 items.append(
                     AvitoItem(
@@ -214,4 +207,5 @@ class AvitoParser:
                 logger.exception(f"Ошибка карточки: {e}")
 
         return items, 200
+
 
