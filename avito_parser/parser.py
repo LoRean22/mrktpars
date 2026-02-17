@@ -1,7 +1,9 @@
 import requests
 import random
 import time
-from typing import List, Tuple
+import os
+import pickle
+from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -18,10 +20,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
 ]
 
+COOKIE_DIR = "core/session_storage"
+os.makedirs(COOKIE_DIR, exist_ok=True)
+
 
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
+
         self.proxy = proxy
         self.session = requests.Session()
 
@@ -34,8 +40,8 @@ class AvitoParser:
             "Referer": "https://www.avito.ru/",
         })
 
+        # === PROXY ===
         if proxy:
-            logger.info(f"Parser: использую прокси {proxy}")
             parts = proxy.split(":")
 
             if len(parts) == 4:
@@ -52,29 +58,57 @@ class AvitoParser:
                 "https": proxy_url,
             })
 
+        # === COOKIE STORAGE PER PROXY ===
+        self.cookie_file = os.path.join(
+            COOKIE_DIR,
+            f"{proxy.replace(':','_') if proxy else 'no_proxy'}.pkl"
+        )
+
+        self.load_cookies()
+
         self.dynamic_limit = 1
         self.max_limit = random.randint(MIN_ITEMS_LIMIT, MAX_ITEMS_LIMIT)
 
-    # -------------------------
-    # ПРОГРЕВ
-    # -------------------------
+    # ------------------------------------
 
-    def warmup(self, url: str):
+    def load_cookies(self):
+        if os.path.exists(self.cookie_file):
+            try:
+                with open(self.cookie_file, "rb") as f:
+                    self.session.cookies.update(pickle.load(f))
+                logger.info("Cookies loaded")
+            except:
+                pass
+
+    def save_cookies(self):
         try:
-            logger.info("Parser: прогрев IP")
+            with open(self.cookie_file, "wb") as f:
+                pickle.dump(self.session.cookies, f)
+        except:
+            pass
+
+    # ------------------------------------
+
+    def human_navigation(self, url: str):
+        """
+        Имитируем поведение человека:
+        главная -> регион -> категория
+        """
+        try:
+            logger.info("Human navigation start")
 
             self.session.get("https://www.avito.ru", timeout=15)
-            time.sleep(random.uniform(1.0, 2.0))
+            time.sleep(random.uniform(1.5, 3.0))
 
             parsed = urlparse(url)
             region_url = f"{parsed.scheme}://{parsed.netloc}"
             self.session.get(region_url, timeout=15)
-            time.sleep(random.uniform(1.0, 2.0))
+            time.sleep(random.uniform(1.5, 3.0))
 
         except Exception as e:
-            logger.warning(f"WARMUP ERROR: {e}")
+            logger.warning(f"Navigation error: {e}")
 
-    # -------------------------
+    # ------------------------------------
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -82,15 +116,17 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    # -------------------------
+    # ------------------------------------
 
-    def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
+    def parse_once(self, url: str) -> List[AvitoItem]:
 
-        time.sleep(random.uniform(2.0, 4.0))
+        time.sleep(random.uniform(2.0, 5.0))
+
         url = self.clean_url(url)
 
+        # Первый запуск — делаем человеческую навигацию
         if self.dynamic_limit == 1:
-            self.warmup(url)
+            self.human_navigation(url)
 
         logger.info(f"[REQUESTS] Парсинг {url}")
 
@@ -98,25 +134,25 @@ class AvitoParser:
             response = self.session.get(url, timeout=20)
         except Exception as e:
             logger.warning(f"REQUEST ERROR: {e}")
-            return [], 0
+            return []
 
-        status = response.status_code
-        logger.info(f"[REQUESTS] Status {status}")
+        logger.info(f"[REQUESTS] Status {response.status_code}")
 
-        if status == 429:
+        if response.status_code == 429:
             logger.warning("IP забанен (429)")
-            return [], 429
+            return []
 
-        if status != 200:
-            return [], status
+        if response.status_code != 200:
+            return []
 
         if "Доступ ограничен" in response.text:
             logger.warning("Avito ограничил доступ")
-            return [], 403
+            return []
+
+        self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
         cards = soup.select('[data-marker="item"]')
-
         cards = cards[:self.dynamic_limit]
 
         if self.dynamic_limit < self.max_limit:
@@ -154,9 +190,7 @@ class AvitoParser:
                         price = int(digits)
 
                 image_tag = card.select_one("img")
-                image_url = None
-                if image_tag:
-                    image_url = image_tag.get("src")
+                image_url = image_tag.get("src") if image_tag else None
 
                 items.append(
                     AvitoItem(
@@ -168,7 +202,7 @@ class AvitoParser:
                     )
                 )
 
-            except Exception as e:
-                logger.exception(f"Ошибка карточки: {e}")
+            except Exception:
+                continue
 
-        return items, status
+        return items
