@@ -1,11 +1,12 @@
+import asyncio
 import random
 import re
-import asyncio
 from typing import List, Tuple
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode
 
 import aiohttp
+from loguru import logger
 
 from avito_parser.models import AvitoItem
 
@@ -41,13 +42,16 @@ class AvitoParser:
         proxy_url = None
         if self.proxy:
             parts = self.proxy.split(":")
-
             if len(parts) == 4:
                 ip, port, login, password = parts
                 proxy_url = f"http://{login}:{password}@{ip}:{port}"
             elif len(parts) == 2:
                 ip, port = parts
                 proxy_url = f"http://{ip}:{port}"
+
+        logger.info(f"[PARSER] Start parsing {url}")
+        if proxy_url:
+            logger.info(f"[PARSER] Using proxy {proxy_url}")
 
         try:
             timeout = aiohttp.ClientTimeout(total=20)
@@ -60,6 +64,7 @@ class AvitoParser:
                 ) as response:
 
                     status = response.status
+                    logger.info(f"[PARSER] Status: {status}")
 
                     if status != 200:
                         return [], status
@@ -67,6 +72,7 @@ class AvitoParser:
                     text = await response.text()
 
                     if "Доступ ограничен" in text:
+                        logger.warning("[PARSER] Access restricted by Avito")
                         return [], 403
 
                     soup = BeautifulSoup(text, "lxml")
@@ -109,9 +115,13 @@ class AvitoParser:
                             )
                         )
 
+                    logger.info(f"[PARSER] Found items: {len(items)}")
+
                     return items, 200
 
         except asyncio.TimeoutError:
+            logger.error("[PARSER] Timeout error")
             return [], 408
-        except Exception:
+        except Exception as e:
+            logger.exception(f"[PARSER] Unexpected error: {e}")
             return [], 500

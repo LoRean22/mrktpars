@@ -1,4 +1,6 @@
 import asyncio
+from loguru import logger
+
 from datetime import datetime, timedelta
 import pymysql
 
@@ -77,15 +79,19 @@ def format_message(item):
 
 async def monitor_worker(tg_id: int, search_url: str):
 
+    logger.info(f"[MONITOR START] {tg_id}")
+
     pool = await get_pool()
 
     async with pool.acquire() as connection:
         async with connection.cursor() as cursor:
 
-            # --- прогрев ---
             proxy_row = get_next_proxy()
             if not proxy_row:
+                logger.error("No proxy available for init")
                 return
+
+            logger.info(f"[{tg_id}] INIT proxy {proxy_row['proxy']}")
 
             parser = AvitoParser(proxy=proxy_row["proxy"])
             items, status = await parser.parse_once(search_url)
@@ -96,22 +102,26 @@ async def monitor_worker(tg_id: int, search_url: str):
                     VALUES (%s, %s, NOW())
                 """, (tg_id, item.id))
 
-    # --- основной цикл ---
     while True:
         await asyncio.sleep(30)
 
         proxy_row = get_next_proxy()
         if not proxy_row:
+            logger.error("No available proxy")
             continue
+
+        logger.info(f"[{tg_id}] Using proxy {proxy_row['proxy']}")
 
         parser = AvitoParser(proxy=proxy_row["proxy"])
         items, status = await parser.parse_once(search_url)
 
         if status == 429:
+            logger.warning(f"[{tg_id}] 429 → banning proxy {proxy_row['id']}")
             mark_proxy_banned(proxy_row["id"])
             continue
 
         if status != 200:
+            logger.warning(f"[{tg_id}] Non-200 status: {status}")
             continue
 
         async with pool.acquire() as connection:
@@ -125,6 +135,8 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                     if cursor.rowcount == 0:
                         continue
+
+                    logger.success(f"[{tg_id}] NEW ITEM {item.id}")
 
                     await send_message(
                         tg_id,
