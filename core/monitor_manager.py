@@ -1,14 +1,12 @@
 import asyncio
 from datetime import datetime
 import pymysql
+import random
+
 
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 
-
-# -------------------------
-# DB CONNECTION
-# -------------------------
 
 def get_connection():
     return pymysql.connect(
@@ -20,16 +18,8 @@ def get_connection():
     )
 
 
-# -------------------------
-# ACTIVE TASKS
-# -------------------------
-
 active_monitors = {}
 
-
-# -------------------------
-# PROXY ROTATION
-# -------------------------
 
 def get_next_proxy():
     connection = get_connection()
@@ -60,24 +50,13 @@ def get_next_proxy():
         connection.close()
 
 
-# -------------------------
-# MESSAGE FORMAT
-# -------------------------
-
 def format_message(item):
     return (
         f"📦 {item.title}\n"
         f"💰 {item.price} ₽\n\n"
-        f"👤 {item.seller_name or '— |'}"
-        f"🏪 {item.seller_type or '— |'}"
-        f"📅 {item.seller_since or '— |'}\n"
         f"🔗 {item.url}"
     )
 
-
-# -------------------------
-# MONITOR WORKER
-# -------------------------
 
 async def monitor_worker(tg_id: int, search_url: str):
 
@@ -86,11 +65,16 @@ async def monitor_worker(tg_id: int, search_url: str):
     connection = get_connection()
 
     try:
-        # ---- ПЕРВИЧНЫЙ ПРОГРЕВ (БЕЗ ОТПРАВКИ) ----
         proxy = get_next_proxy()
-        parser = AvitoParser(proxy=proxy)
-        items = parser.parse_once(search_url)
+        if not proxy:
+            print("NO PROXY")
+            return
 
+        # Sticky proxy + persistent session
+        parser = AvitoParser(proxy=proxy)
+
+        # прогрев без отправки
+        items = parser.parse_once(search_url)
         for item in items:
             with connection.cursor() as cursor:
                 cursor.execute("""
@@ -99,20 +83,11 @@ async def monitor_worker(tg_id: int, search_url: str):
                 """, (tg_id, item.id, datetime.now()))
                 connection.commit()
 
-        print(f"[MONITOR INIT DONE] {tg_id}")
+        print(f"[INIT DONE] {tg_id}")
 
-        # ---- ОСНОВНОЙ ЦИКЛ ----
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(random.uniform(25, 40))
 
-            proxy = get_next_proxy()
-            if not proxy:
-                print("NO PROXY AVAILABLE")
-                continue
-
-            print(f"[{tg_id}] Using proxy: {proxy}")
-
-            parser = AvitoParser(proxy=proxy)
             items = parser.parse_once(search_url)
 
             for item in items:
@@ -123,7 +98,6 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id))
 
                     exists = cursor.fetchone()
-
                     if exists:
                         continue
 
@@ -133,28 +107,15 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id, datetime.now()))
                     connection.commit()
 
-                text = format_message(item)
-
-                print(f"[{tg_id}] Sending new item:", item.id)
-
-                send_message(tg_id, text, item.image_url)
-
+                send_message(tg_id, format_message(item), item.image_url)
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
 
-    except Exception as e:
-        print("MONITOR ERROR:", e)
-
     finally:
         connection.close()
-        if tg_id in active_monitors:
-            del active_monitors[tg_id]
+        active_monitors.pop(tg_id, None)
 
-
-# -------------------------
-# START / STOP
-# -------------------------
 
 def start_monitor(tg_id: int, url: str):
     if tg_id in active_monitors:
