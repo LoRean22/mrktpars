@@ -1,11 +1,11 @@
 import requests
 import random
 import time
-import re
 from typing import List
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs, urlencode
 from loguru import logger
+from urllib.parse import urlparse, parse_qs, urlencode
+import re
 
 from avito_parser.models import AvitoItem
 
@@ -20,60 +20,31 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
-# 🔥 Кэш сессий (чтобы прокси не создавались каждый раз)
-_sessions = {}
-
-
-def build_proxy_url(proxy_raw: str | None):
-    """
-    Конвертирует формат:
-    ip:port:login:password
-    в:
-    http://login:password@ip:port
-    """
-    if not proxy_raw:
-        return None
-
-    parts = proxy_raw.split(":")
-
-    if len(parts) == 4:
-        ip, port, login, password = parts
-        return f"http://{login}:{password}@{ip}:{port}"
-
-    if len(parts) == 2:
-        ip, port = parts
-        return f"http://{ip}:{port}"
-
-    raise ValueError("Неверный формат прокси")
-
-
-def get_session(proxy_raw: str | None):
-    key = proxy_raw or "direct"
-
-    if key not in _sessions:
-        logger.info(f"[SESSION] Creating new session for {key}")
-
-        session = requests.Session()
-        session.headers.update(HEADERS)
-
-        proxy_url = build_proxy_url(proxy_raw)
-
-        if proxy_url:
-            session.proxies.update({
-                "http": proxy_url,
-                "https": proxy_url
-            })
-
-        _sessions[key] = session
-
-    return _sessions[key]
-
 
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
-        self.proxy_raw = proxy
-        self.session = get_session(proxy)
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+
+        if proxy:
+            logger.info(f"Parser: использую прокси {proxy}")
+
+            parts = proxy.split(":")
+
+            if len(parts) == 4:
+                ip, port, login, password = parts
+                proxy_url = f"http://{login}:{password}@{ip}:{port}"
+            elif len(parts) == 2:
+                ip, port = parts
+                proxy_url = f"http://{ip}:{port}"
+            else:
+                raise ValueError("Неверный формат прокси")
+
+            self.session.proxies.update({
+                "http": proxy_url,
+                "https": proxy_url,
+            })
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -83,33 +54,39 @@ class AvitoParser:
 
     def parse_once(self, url: str) -> List[AvitoItem]:
 
+        logger.info(f"Parser: начинаю парсинг {url}")
+
+        time.sleep(random.uniform(0.8, 1.5))
+
+        url = self.clean_url(url)
+
         try:
-            time.sleep(random.uniform(0.8, 1.5))
-
-            url = self.clean_url(url)
-
             response = self.session.get(url, timeout=20)
+        except Exception as e:
+            logger.error(f"[PARSER ERROR] {e}")
+            return []
 
-            logger.info(f"[REQUESTS] Status {response.status_code}")
+        if response.status_code == 429:
+            logger.warning("IP забанен (429)")
+            return []
 
-            if response.status_code == 429:
-                logger.warning("[REQUESTS] 429 BAN")
-                return []
+        if response.status_code != 200:
+            logger.warning(f"Статус {response.status_code}")
+            return []
 
-            if response.status_code != 200:
-                return []
+        if "Доступ ограничен" in response.text:
+            logger.warning("Avito ограничил доступ")
+            return []
 
-            if "Доступ ограничен" in response.text:
-                logger.warning("[REQUESTS] Access restricted")
-                return []
+        soup = BeautifulSoup(response.text, "lxml")
+        cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
 
-            soup = BeautifulSoup(response.text, "lxml")
-            cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
+        logger.info(f"Parser: найдено карточек {len(cards)}")
 
-            items: List[AvitoItem] = []
+        items: List[AvitoItem] = []
 
-            for card in cards:
-
+        for card in cards:
+            try:
                 link = card.select_one('a[data-marker="item-title"]')
                 if not link:
                     continue
@@ -145,10 +122,7 @@ class AvitoParser:
                     )
                 )
 
-            logger.info(f"[REQUESTS] Found {len(items)} items")
+            except Exception as e:
+                logger.exception(f"Ошибка карточки: {e}")
 
-            return items
-
-        except Exception as e:
-            logger.error(f"[PARSER ERROR] {e}")
-            return []
+        return items
