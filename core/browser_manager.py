@@ -24,13 +24,20 @@ class BrowserManager:
         logger.info("Playwright browser started")
 
     async def stop(self):
-        if self.browser:
-            await self.browser.close()
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception as e:
+            logger.warning(f"Browser close error (ignored): {e}")
 
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception as e:
+            logger.warning(f"Playwright stop error (ignored): {e}")
 
         logger.info("Playwright browser stopped")
+
 
     async def new_context(self, proxy: str | None = None):
 
