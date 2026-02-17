@@ -13,12 +13,16 @@ MAX_ITEMS = 20
 
 class AvitoParser:
 
-    def __init__(self, tg_id: int):
+
+    def __init__(self, tg_id: int, proxy: str | None = None):
         self.tg_id = tg_id
+        self.proxy = proxy
+
 
     async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
 
-        context = await browser_manager.get_context(self.tg_id)
+        context = await browser_manager.get_context(self.tg_id, self.proxy)
+
         page = await context.new_page()
 
         try:

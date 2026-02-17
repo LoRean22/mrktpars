@@ -179,7 +179,8 @@ async def monitor_worker(tg_id: int, search_url: str):
 
             logger.info(f"[{tg_id}] Using proxy {proxy_row['proxy']}")
 
-            parser = AvitoParser(proxy=proxy_row["proxy"])
+            parser = AvitoParser(tg_id)
+
             items, status = await parser.parse_once(search_url)
 
             update_proxy_health(proxy_row["id"], status)
