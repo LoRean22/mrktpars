@@ -3,7 +3,6 @@ from datetime import datetime
 import pymysql
 import random
 
-
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 
@@ -23,7 +22,6 @@ active_monitors = {}
 
 def get_next_proxy():
     connection = get_connection()
-
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
@@ -45,7 +43,6 @@ def get_next_proxy():
             connection.commit()
 
             return proxy["proxy"]
-
     finally:
         connection.close()
 
@@ -61,35 +58,42 @@ def format_message(item):
 async def monitor_worker(tg_id: int, search_url: str):
 
     print(f"[MONITOR START] {tg_id}")
-
     connection = get_connection()
 
     try:
-        proxy = get_next_proxy()
-        if not proxy:
-            print("NO PROXY")
-            return
-
-        # Sticky proxy + persistent session
-        parser = AvitoParser(proxy=proxy)
-
-        # прогрев без отправки
-        items = parser.parse_once(search_url)
-        for item in items:
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
-                    VALUES (%s, %s, %s)
-                """, (tg_id, item.id, datetime.now()))
-                connection.commit()
-
-        print(f"[INIT DONE] {tg_id}")
+        parser = None
+        proxy = None
 
         while True:
-            await asyncio.sleep(random.uniform(25, 40))
 
-            items = parser.parse_once(search_url)
+            # если нет parser или словили 429 → берем новый прокси
+            if not parser:
+                proxy = get_next_proxy()
+                if not proxy:
+                    print("NO PROXY")
+                    await asyncio.sleep(10)
+                    continue
 
+                print(f"[{tg_id}] USING PROXY {proxy}")
+                parser = AvitoParser(proxy=proxy)
+
+                # небольшой случайный прогрев
+                await asyncio.sleep(random.uniform(3, 6))
+
+            items, status = parser.parse_once(search_url)
+
+            if status == 429:
+                print(f"[{tg_id}] 429 DETECTED → switching proxy")
+                parser = None
+                await asyncio.sleep(random.uniform(5, 10))
+                continue
+
+            if status != 200:
+                print(f"[{tg_id}] Status {status}")
+                await asyncio.sleep(random.uniform(10, 15))
+                continue
+
+            # ---- обработка новых ----
             for item in items:
                 with connection.cursor() as cursor:
                     cursor.execute("""
@@ -108,6 +112,9 @@ async def monitor_worker(tg_id: int, search_url: str):
                     connection.commit()
 
                 send_message(tg_id, format_message(item), item.image_url)
+
+            # человекоподобная пауза
+            await asyncio.sleep(random.uniform(25, 40))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
