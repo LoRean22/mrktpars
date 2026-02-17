@@ -1,11 +1,9 @@
 import asyncio
 from loguru import logger
-
 from datetime import datetime, timedelta
 import pymysql
 
 from core.database import get_pool
-
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 
@@ -23,6 +21,10 @@ def get_connection():
 active_monitors = {}
 
 
+# =========================
+# PROXY SYSTEM
+# =========================
+
 def get_next_proxy():
     connection = get_connection()
 
@@ -31,7 +33,7 @@ def get_next_proxy():
             cursor.execute("""
                 SELECT * FROM proxies
                 WHERE (is_banned=0 OR banned_until < NOW() OR banned_until IS NULL)
-                ORDER BY last_used_at IS NULL DESC, last_used_at ASC
+                ORDER BY health_score DESC, last_used_at ASC
                 LIMIT 1
             """)
             proxy = cursor.fetchone()
@@ -52,22 +54,67 @@ def get_next_proxy():
         connection.close()
 
 
-def mark_proxy_banned(proxy_id):
+def update_proxy_health(proxy_id, status):
     connection = get_connection()
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute("""
-                UPDATE proxies
-                SET is_banned=1,
-                    banned_until=%s
-                WHERE id=%s
-            """, (datetime.now() + timedelta(minutes=10), proxy_id))
+
+            if status == 200:
+                cursor.execute("""
+                    UPDATE proxies
+                    SET health_score = LEAST(health_score + 1, 100),
+                        success_count = success_count + 1
+                    WHERE id=%s
+                """, (proxy_id,))
+
+            elif status == 429:
+                cursor.execute("""
+                    UPDATE proxies
+                    SET health_score = health_score - 25,
+                        fail_count = fail_count + 1
+                    WHERE id=%s
+                """, (proxy_id,))
+
+            elif status == 403:
+                cursor.execute("""
+                    UPDATE proxies
+                    SET health_score = health_score - 20,
+                        fail_count = fail_count + 1
+                    WHERE id=%s
+                """, (proxy_id,))
+
+            else:
+                cursor.execute("""
+                    UPDATE proxies
+                    SET health_score = health_score - 10,
+                        fail_count = fail_count + 1
+                    WHERE id=%s
+                """, (proxy_id,))
+
+            # Проверяем здоровье
+            cursor.execute("SELECT health_score FROM proxies WHERE id=%s", (proxy_id,))
+            row = cursor.fetchone()
+
+            if row and row["health_score"] <= 20:
+                logger.warning(f"[PROXY] Proxy {proxy_id} health <= 20 → banning 3 min")
+
+                cursor.execute("""
+                    UPDATE proxies
+                    SET is_banned=1,
+                        banned_until=%s
+                    WHERE id=%s
+                """, (datetime.now() + timedelta(minutes=3), proxy_id))
+
             connection.commit()
 
     finally:
         connection.close()
 
+
+# =========================
+# MESSAGE
+# =========================
 
 def format_message(item):
     return (
@@ -77,76 +124,102 @@ def format_message(item):
     )
 
 
+# =========================
+# MONITOR WORKER
+# =========================
+
 async def monitor_worker(tg_id: int, search_url: str):
 
     logger.info(f"[MONITOR START] {tg_id}")
 
     pool = await get_pool()
 
-    async with pool.acquire() as connection:
-        async with connection.cursor() as cursor:
-
+    try:
+        # ---------- INIT (ждём прокси если нет) ----------
+        while True:
             proxy_row = get_next_proxy()
-            if not proxy_row:
-                logger.error("No proxy available for init")
-                return
 
-            logger.info(f"[{tg_id}] INIT proxy {proxy_row['proxy']}")
+            if proxy_row:
+                break
 
-            parser = AvitoParser(proxy=proxy_row["proxy"])
-            items, status = await parser.parse_once(search_url)
+            logger.warning("No proxy available for init → waiting 10 sec")
+            await asyncio.sleep(10)
 
-            for item in items:
-                await cursor.execute("""
-                    INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
-                    VALUES (%s, %s, NOW())
-                """, (tg_id, item.id))
-
-    while True:
-        await asyncio.sleep(30)
-
-        proxy_row = get_next_proxy()
-        if not proxy_row:
-            logger.error("No available proxy")
-            continue
-
-        logger.info(f"[{tg_id}] Using proxy {proxy_row['proxy']}")
+        logger.info(f"[{tg_id}] INIT proxy {proxy_row['proxy']}")
 
         parser = AvitoParser(proxy=proxy_row["proxy"])
         items, status = await parser.parse_once(search_url)
 
-        if status == 429:
-            logger.warning(f"[{tg_id}] 429 → banning proxy {proxy_row['id']}")
-            mark_proxy_banned(proxy_row["id"])
-            continue
-
-        if status != 200:
-            logger.warning(f"[{tg_id}] Non-200 status: {status}")
-            continue
+        update_proxy_health(proxy_row["id"], status)
 
         async with pool.acquire() as connection:
             async with connection.cursor() as cursor:
-
                 for item in items:
                     await cursor.execute("""
                         INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
                         VALUES (%s, %s, NOW())
                     """, (tg_id, item.id))
 
-                    if cursor.rowcount == 0:
-                        continue
+        # ---------- MAIN LOOP ----------
+        while True:
+            await asyncio.sleep(30)
 
-                    logger.success(f"[{tg_id}] NEW ITEM {item.id}")
+            proxy_row = get_next_proxy()
+            if not proxy_row:
+                logger.warning("No available proxy → waiting")
+                continue
 
-                    await send_message(
-                        tg_id,
-                        f"📦 {item.title}\n💰 {item.price} ₽\n🔗 {item.url}"
-                    )
+            logger.info(f"[{tg_id}] Using proxy {proxy_row['proxy']}")
+
+            parser = AvitoParser(proxy=proxy_row["proxy"])
+            items, status = await parser.parse_once(search_url)
+
+            update_proxy_health(proxy_row["id"], status)
+
+            if status == 429:
+                logger.warning(f"[{tg_id}] 429 → proxy health reduced")
+                continue
+
+            if status != 200:
+                logger.warning(f"[{tg_id}] Non-200 status: {status}")
+                continue
+
+            async with pool.acquire() as connection:
+                async with connection.cursor() as cursor:
+
+                    for item in items:
+                        await cursor.execute("""
+                            INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
+                            VALUES (%s, %s, NOW())
+                        """, (tg_id, item.id))
+
+                        if cursor.rowcount == 0:
+                            continue
+
+                        logger.success(f"[{tg_id}] NEW ITEM {item.id}")
+
+                        await send_message(
+                            tg_id,
+                            format_message(item)
+                        )
+
+    except asyncio.CancelledError:
+        logger.info(f"[MONITOR STOPPED] {tg_id}")
+
+    except Exception as e:
+        logger.exception(f"[MONITOR ERROR] {e}")
+
+    finally:
+        active_monitors.pop(tg_id, None)
 
 
+# =========================
+# START / STOP
+# =========================
 
 def start_monitor(tg_id: int, url: str):
     if tg_id in active_monitors:
+        logger.warning(f"Monitor already running for {tg_id}")
         return
 
     task = asyncio.create_task(monitor_worker(tg_id, url))
