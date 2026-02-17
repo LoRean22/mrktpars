@@ -68,9 +68,9 @@ def format_message(item):
     return (
         f"📦 {item.title}\n"
         f"💰 {item.price} ₽\n\n"
-        f"👤 {item.seller_name or '—'}\n"
-        f"🏪 {item.seller_type or '—'}\n"
-        f"📅 {item.seller_since or '—'}\n\n"
+        f"👤 {item.seller_name or '— |'}"
+        f"🏪 {item.seller_type or '— |'}"
+        f"📅 {item.seller_since or '— |'}\n"
         f"🔗 {item.url}"
     )
 
@@ -86,12 +86,8 @@ async def monitor_worker(tg_id: int, search_url: str):
     connection = get_connection()
 
     try:
-        # -------- ПЕРВИЧНЫЙ ПРОГРЕВ --------
+        # ---- ПЕРВИЧНЫЙ ПРОГРЕВ (БЕЗ ОТПРАВКИ) ----
         proxy = get_next_proxy()
-        if not proxy:
-            print("NO PROXY AVAILABLE")
-            return
-
         parser = AvitoParser(proxy=proxy)
         items = parser.parse_once(search_url)
 
@@ -105,7 +101,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         print(f"[MONITOR INIT DONE] {tg_id}")
 
-        # -------- ОСНОВНОЙ ЦИКЛ --------
+        # ---- ОСНОВНОЙ ЦИКЛ ----
         while True:
             await asyncio.sleep(30)
 
@@ -139,13 +135,10 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 text = format_message(item)
 
-                print(f"[{tg_id}] Sending new item: {item.id}")
+                print(f"[{tg_id}] Sending new item:", item.id)
 
-                # 🔥 отправляем фото если есть
-                if item.image_url:
-                    send_message(tg_id, text, image_url=item.image_url)
-                else:
-                    send_message(tg_id, text)
+                send_message(tg_id, text, item.image_url)
+
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
