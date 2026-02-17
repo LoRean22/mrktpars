@@ -1,30 +1,37 @@
 from playwright.async_api import async_playwright
 from loguru import logger
+import random
+
 
 class BrowserManager:
     def __init__(self):
         self.playwright = None
         self.browser = None
-        self.contexts = {}
 
     async def start(self):
         self.playwright = await async_playwright().start()
+
         self.browser = await self.playwright.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"]
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
         )
+
         logger.info("Playwright browser started")
 
     async def stop(self):
         if self.browser:
             await self.browser.close()
+
         if self.playwright:
             await self.playwright.stop()
-        logger.info("Playwright stopped")
 
-    async def get_context(self, tg_id: int, proxy: str | None = None):
-        if tg_id in self.contexts:
-            return self.contexts[tg_id]
+        logger.info("Playwright browser stopped")
+
+    async def new_context(self, proxy: str | None = None):
 
         proxy_config = None
 
@@ -44,13 +51,16 @@ class BrowserManager:
                 }
 
         context = await self.browser.new_context(
-            locale="ru-RU",
-            proxy=proxy_config
+            proxy=proxy_config,
+            user_agent=random.choice([
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+            ]),
+            viewport={"width": 1280, "height": 900}
         )
 
-        self.contexts[tg_id] = context
         return context
-
 
 
 browser_manager = BrowserManager()

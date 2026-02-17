@@ -1,14 +1,17 @@
 import asyncio
+import random
 from loguru import logger
 from datetime import datetime, timedelta
 import pymysql
-
-import random
 
 from core.database import get_pool
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 
+
+# =========================
+# DB CONNECTION (SYNC for proxies)
+# =========================
 
 def get_connection():
     return pymysql.connect(
@@ -94,7 +97,7 @@ def update_proxy_health(proxy_id, status):
                     WHERE id=%s
                 """, (proxy_id,))
 
-            # Проверяем здоровье
+            # Проверка здоровья
             cursor.execute("SELECT health_score FROM proxies WHERE id=%s", (proxy_id,))
             row = cursor.fetchone()
 
@@ -115,7 +118,7 @@ def update_proxy_health(proxy_id, status):
 
 
 # =========================
-# MESSAGE
+# MESSAGE FORMAT
 # =========================
 
 def format_message(item):
@@ -137,24 +140,23 @@ async def monitor_worker(tg_id: int, search_url: str):
     pool = await get_pool()
 
     try:
-        # ---------- INIT (ждём прокси если нет) ----------
+        # -------- INIT --------
         while True:
             proxy_row = get_next_proxy()
-
             if proxy_row:
                 break
 
-            logger.warning("No proxy available for init → waiting 10 sec")
+            logger.warning("No proxy available → waiting 10 sec")
             await asyncio.sleep(10)
 
         logger.info(f"[{tg_id}] INIT proxy {proxy_row['proxy']}")
 
-        parser = AvitoParser(tg_id)
-
-        items, status = await parser.parse_once(search_url)
+        parser = AvitoParser()
+        items, status = await parser.parse_once(search_url, proxy_row["proxy"])
 
         update_proxy_health(proxy_row["id"], status)
 
+        # Прогрев — сохраняем все текущие объявления
         async with pool.acquire() as connection:
             async with connection.cursor() as cursor:
                 for item in items:
@@ -165,28 +167,26 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id))
 
 
-        # ---------- MAIN LOOP ----------
+        # -------- MAIN LOOP --------
         while True:
             sleep_time = random.uniform(20, 40)
             logger.info(f"[{tg_id}] Sleeping {round(sleep_time, 2)} sec")
             await asyncio.sleep(sleep_time)
 
-
             proxy_row = get_next_proxy()
             if not proxy_row:
-                logger.warning("No available proxy → waiting")
+                logger.warning("No available proxy")
                 continue
 
             logger.info(f"[{tg_id}] Using proxy {proxy_row['proxy']}")
 
-            parser = AvitoParser(tg_id)
-
-            items, status = await parser.parse_once(search_url)
+            parser = AvitoParser()
+            items, status = await parser.parse_once(search_url, proxy_row["proxy"])
 
             update_proxy_health(proxy_row["id"], status)
 
             if status == 429:
-                logger.warning(f"[{tg_id}] 429 → proxy health reduced")
+                logger.warning(f"[{tg_id}] 429 detected")
                 continue
 
             if status != 200:
@@ -198,8 +198,9 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                     for item in items:
                         await cursor.execute("""
-                            INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
+                            INSERT INTO parsed_items (tg_id, item_id, created_at)
                             VALUES (%s, %s, NOW())
+                            ON DUPLICATE KEY UPDATE item_id = item_id
                         """, (tg_id, item.id))
 
                         if cursor.rowcount == 0:
