@@ -329,7 +329,8 @@ async def run_parser(data: RunParser):
                     print("SENDING TO TG:", data.tg_id)
                     print("TEXT:", text)
 
-                    await send_message(data.tg_id, text)
+                    send_message(data.tg_id, text)
+
 
                     sent += 1
 
