@@ -1,6 +1,6 @@
 import requests
 
-BOT_TOKEN = "..."
+BOT_TOKEN = "8529435887:AAHjrDxKJ8CBBtagAWb4zZ7mtJaiEfTc5S0"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 def send_message(tg_id: int, text: str):
