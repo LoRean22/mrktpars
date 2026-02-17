@@ -12,18 +12,38 @@ class AvitoPlaywrightClient:
 
     async def get_html(self, url: str) -> str:
         logger.info(f"Playwright: открываю {url}")
+        logger.info(f"Playwright: прокси = {self.proxy}")
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,   # 🔥 ВАЖНО
-                args=[
+
+            launch_args = {
+                "headless": False,  # 🚀 ВАЖНО
+                "args": [
                     "--disable-blink-features=AutomationControlled",
-                    "--start-maximized",
                 ],
-            )
+            }
+
+            # 🔥 Если есть прокси — подключаем
+            if self.proxy:
+                # формат: ip:port:login:pass
+                parts = self.proxy.split(":")
+                if len(parts) == 4:
+                    ip, port, login, password = parts
+                    launch_args["proxy"] = {
+                        "server": f"http://{ip}:{port}",
+                        "username": login,
+                        "password": password,
+                    }
+                elif len(parts) == 2:
+                    ip, port = parts
+                    launch_args["proxy"] = {
+                        "server": f"http://{ip}:{port}",
+                    }
+
+            browser = await p.chromium.launch(**launch_args)
 
             context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
+                viewport={"width": 1366, "height": 768},
                 locale="ru-RU",
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -33,22 +53,18 @@ class AvitoPlaywrightClient:
             )
 
             page = await context.new_page()
+
+            # 🚀 Убираем webdriver
             await page.evaluate("""
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined
-    })
-""")
-            await page.goto(url, timeout=30000)
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                })
+            """)
 
-            try:
-                await page.wait_for_selector(
-                    '[data-marker="item"], div[data-item-id]',
-                    timeout=10000
-                )
-            except Exception:
-                logger.warning("Карточки не появились, продолжаем")
+            await page.goto(url, timeout=60000)
 
-            await page.wait_for_timeout(2000)
+            # Ждём реальный рендер
+            await page.wait_for_timeout(5000)
 
             html = await page.content()
 
