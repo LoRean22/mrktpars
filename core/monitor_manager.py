@@ -3,6 +3,8 @@ from loguru import logger
 from datetime import datetime, timedelta
 import pymysql
 
+import random
+
 from core.database import get_pool
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
@@ -164,7 +166,10 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         # ---------- MAIN LOOP ----------
         while True:
-            await asyncio.sleep(30)
+            sleep_time = random.uniform(20, 40)
+            logger.info(f"[{tg_id}] Sleeping {round(sleep_time, 2)} sec")
+            await asyncio.sleep(sleep_time)
+
 
             proxy_row = get_next_proxy()
             if not proxy_row:

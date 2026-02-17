@@ -8,8 +8,6 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from loguru import logger
 import core.http_client as http_client
 
-
-
 from avito_parser.models import AvitoItem
 
 MAX_ITEMS = 20
@@ -22,7 +20,10 @@ def get_headers():
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
         ]),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
 
 
@@ -37,14 +38,30 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
+    async def warmup(self, proxy_url: str | None):
+        """
+        Заходим на главную страницу для получения cookie
+        """
+        try:
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+
+            async with http_client.http_session.get(
+                "https://www.avito.ru/",
+                headers=get_headers(),
+                proxy=proxy_url
+            ) as response:
+                logger.info(f"[WARMUP] Status {response.status}")
+                await response.text()
+
+        except Exception as e:
+            logger.warning(f"[WARMUP] Failed: {e}")
+
     async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
 
         if http_client.http_session is None:
-            logger.warning("HTTP session was None → initializing manually")
             await http_client.init_http_session()
 
-
-        await asyncio.sleep(random.uniform(0.8, 1.5))  # возвращаем human delay
+        await asyncio.sleep(random.uniform(0.8, 1.8))  # human jitter
 
         url = self.clean_url(url)
 
@@ -62,9 +79,11 @@ class AvitoParser:
         if proxy_url:
             logger.info(f"[PARSER] Proxy {proxy_url}")
 
+        # warm-up перед реальным запросом
+        await self.warmup(proxy_url)
+
         try:
             async with http_client.http_session.get(
-
                 url,
                 headers=get_headers(),
                 proxy=proxy_url
