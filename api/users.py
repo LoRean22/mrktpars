@@ -304,12 +304,17 @@ async def run_parser(data: RunParser):
                     connection.commit()
 
                     text = f"{item.title}\n{item.url}"
-                    send_message(data.tg_id, text)
 
+                    print("SENDING TO TG:", data.tg_id)
+                    print("TEXT:", text)
+
+                    # await send_message(data.tg_id, text)
 
                     sent += 1
-                except:
-                    continue
+
+                except Exception as e:
+                    print("SEND ERROR:", e)
+
 
         return {"status": "ok", "sent": sent}
 

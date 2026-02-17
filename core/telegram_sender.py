@@ -1,24 +1,19 @@
-import httpx
+import requests
 
-BOT_TOKEN = "8529435887:AAHjrDxKJ8CBBtagAWb4zZ7mtJaiEfTc5S0"
+BOT_TOKEN = "..."
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+def send_message(tg_id: int, text: str):
+    r = requests.post(
+        f"{BASE_URL}/sendMessage",
+        json={
+            "chat_id": tg_id,
+            "text": text
+        },
+        timeout=10
+    )
 
-async def send_message(tg_id: int, text: str):
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"{BASE_URL}/sendMessage",
-            json={
-                "chat_id": tg_id,
-                "text": text,
-                "parse_mode": "HTML"
-            }
-        )
+    print("TG STATUS:", r.status_code)
+    print("TG RESPONSE:", r.text)
 
-        print("TG STATUS:", r.status_code)
-        print("TG RESPONSE:", r.text)
-
-
-
-
-
+    return r.status_code
