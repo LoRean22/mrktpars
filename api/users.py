@@ -287,7 +287,8 @@ async def run_parser(data: RunParser):
 
         # ---------- ПАРСИНГ ----------
         parser = AvitoParser(proxy=proxy_value)
-        items = parser.parse_once(data.search_url)
+        items = await parser.parse_once(data.search_url)
+
 
 
         sent = 0
