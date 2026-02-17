@@ -1,1 +1,0 @@
-# lorean22.github.io
