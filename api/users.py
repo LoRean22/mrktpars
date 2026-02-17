@@ -3,19 +3,12 @@ from pydantic import BaseModel
 import pymysql
 import asyncio
 
+from core.database import get_connection
+
 from core.monitor_manager import monitor_worker, active_monitors
 
 router = APIRouter()
 
-
-def get_connection():
-    return pymysql.connect(
-        host="localhost",
-        user="mrktpars_user",
-        password="StrongPassword123!",
-        database="mrktpars",
-        cursorclass=pymysql.cursors.DictCursor
-    )
 
 
 class RunParser(BaseModel):

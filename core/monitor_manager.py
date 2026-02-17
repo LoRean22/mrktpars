@@ -4,7 +4,8 @@ import random
 
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
-from api.users import get_connection
+from core.database import get_connection
+
 
 active_monitors = {}
 

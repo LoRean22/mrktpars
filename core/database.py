@@ -1,13 +1,11 @@
-import aiomysql
-import os
+import pymysql
 
-async def get_pool():
-    return await aiomysql.create_pool(
+
+def get_connection():
+    return pymysql.connect(
         host="localhost",
         user="mrktpars_user",
         password="StrongPassword123!",
-        db="mrktpars",
-        autocommit=True,
-        minsize=1,
-        maxsize=10
+        database="mrktpars",
+        cursorclass=pymysql.cursors.DictCursor
     )
