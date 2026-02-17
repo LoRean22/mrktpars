@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import users
+from core.http_client import init_http_session, close_http_session
 
 app = FastAPI()
 
@@ -17,13 +18,21 @@ app.add_middleware(
 )
 
 # ----------------------------
-# Подключаем роутеры
+# Startup / Shutdown
+# ----------------------------
+@app.on_event("startup")
+async def startup():
+    await init_http_session()
+
+@app.on_event("shutdown")
+async def shutdown():
+    await close_http_session()
+
+# ----------------------------
+# Routers
 # ----------------------------
 app.include_router(users.router)
 
-# ----------------------------
-# Проверка сервера
-# ----------------------------
 @app.get("/")
 def root():
     return {"status": "MRKTPARS backend running"}
