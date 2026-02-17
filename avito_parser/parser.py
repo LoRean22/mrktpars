@@ -1,53 +1,32 @@
-import requests
 import random
-import time
-from typing import List
-from bs4 import BeautifulSoup
-from loguru import logger
-from urllib.parse import urlparse, parse_qs, urlencode
-from datetime import datetime, timedelta
 import re
+import asyncio
+from typing import List, Tuple
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, parse_qs, urlencode
+
+import aiohttp
 
 from avito_parser.models import AvitoItem
 
 MAX_ITEMS = 20
 
-HEADERS = {
-    "User-Agent": random.choice([
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-    ]),
-    "Accept-Language": "ru-RU,ru;q=0.9",
-}
+
+def get_headers():
+    return {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+        ]),
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
 
 
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
         self.proxy = proxy
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-
-        if proxy:
-            logger.info(f"Parser: использую прокси {proxy}")
-
-            parts = proxy.split(":")
-
-            if len(parts) == 4:
-                ip, port, login, password = parts
-                proxy_url = f"http://{login}:{password}@{ip}:{port}"
-            elif len(parts) == 2:
-                ip, port = parts
-                proxy_url = f"http://{ip}:{port}"
-            else:
-                raise ValueError("Неверный формат прокси")
-
-            self.session.proxies.update({
-                "http": proxy_url,
-                "https": proxy_url,
-            })
-
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -55,79 +34,84 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    def parse_once(self, url: str) -> List[AvitoItem]:
-
-        
-
-        logger.info(f"Parser: начинаю парсинг {url}")
-
-        time.sleep(random.uniform(0.8, 1.5))
+    async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
 
         url = self.clean_url(url)
 
-        response = self.session.get(url, timeout=20)
+        proxy_url = None
+        if self.proxy:
+            parts = self.proxy.split(":")
 
-        if response.status_code == 429:
-            logger.warning("IP забанен (429)")
-            return []
+            if len(parts) == 4:
+                ip, port, login, password = parts
+                proxy_url = f"http://{login}:{password}@{ip}:{port}"
+            elif len(parts) == 2:
+                ip, port = parts
+                proxy_url = f"http://{ip}:{port}"
 
-        if response.status_code != 200:
-            logger.warning(f"Статус {response.status_code}")
-            return []
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
 
-        if "Доступ ограничен" in response.text:
-            logger.warning("Avito ограничил доступ")
-            return []
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    url,
+                    headers=get_headers(),
+                    proxy=proxy_url
+                ) as response:
 
-        soup = BeautifulSoup(response.text, "lxml")
-        cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
+                    status = response.status
 
-        logger.info(f"Parser: найдено карточек {len(cards)}")
+                    if status != 200:
+                        return [], status
 
-        items: List[AvitoItem] = []
+                    text = await response.text()
 
-        
+                    if "Доступ ограничен" in text:
+                        return [], 403
 
-        for card in cards:
-            try:
-                link = card.select_one('a[data-marker="item-title"]')
-                if not link:
-                    continue
+                    soup = BeautifulSoup(text, "lxml")
+                    cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
 
-                href = link.get("href")
-                if not href:
-                    continue
+                    items: List[AvitoItem] = []
 
-                if href.startswith("/"):
-                    href = "https://www.avito.ru" + href
+                    for card in cards:
+                        link = card.select_one('a[data-marker="item-title"]')
+                        if not link:
+                            continue
 
-                m = re.search(r'_(\d+)$', href.split("?")[0])
-                if not m:
-                    continue
+                        href = link.get("href")
+                        if not href:
+                            continue
 
-                item_id = m.group(1)
+                        if href.startswith("/"):
+                            href = "https://www.avito.ru" + href
 
-                title = link.get_text(strip=True)
+                        m = re.search(r'_(\d+)$', href.split("?")[0])
+                        if not m:
+                            continue
 
-                price_tag = card.select_one('[data-marker="item-price"]')
-                price = 0
-                if price_tag:
-                    digits = "".join(c for c in price_tag.text if c.isdigit())
-                    if digits:
-                        price = int(digits)
+                        item_id = m.group(1)
+                        title = link.get_text(strip=True)
 
-                items.append(
-                    AvitoItem(
-                        id=item_id,
-                        title=title,
-                        price=price,
-                        url=href
-                    )
-                )
-                
+                        price_tag = card.select_one('[data-marker="item-price"]')
+                        price = 0
+                        if price_tag:
+                            digits = "".join(c for c in price_tag.text if c.isdigit())
+                            if digits:
+                                price = int(digits)
 
-            except Exception as e:
-                logger.exception(f"Ошибка карточки: {e}")
+                        items.append(
+                            AvitoItem(
+                                id=item_id,
+                                title=title,
+                                price=price,
+                                url=href
+                            )
+                        )
 
+                    return items, 200
 
-        return items
+        except asyncio.TimeoutError:
+            return [], 408
+        except Exception:
+            return [], 500
