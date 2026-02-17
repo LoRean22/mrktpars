@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 from core.monitor_manager import monitor_worker, active_monitors
+from core.monitor_manager import start_monitor, stop_monitor, active_monitors
 import asyncio
 
 router = APIRouter()
@@ -227,6 +228,7 @@ def activate_trial(data: TrialRequest):
 # RUN PARSER
 # ----------------------------
 
+
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
 
@@ -245,7 +247,7 @@ async def run_parser(data: RunParser):
         if not user:
             return {"error": "User not found"}
 
-        # ---- сохраняем ссылку ----
+        # --- 1 пользователь = 1 ссылка ---
         with connection.cursor() as cursor:
             cursor.execute("""
                 DELETE FROM searches WHERE tg_id=%s
@@ -258,21 +260,16 @@ async def run_parser(data: RunParser):
 
             connection.commit()
 
-        # ---- если уже запущен монитор — не запускаем второй ----
         if data.tg_id in active_monitors:
             return {"status": "already running"}
 
-        # ---- запускаем фоновую задачу ----
-        task = asyncio.create_task(
-            monitor_worker(data.tg_id, data.search_url)
-        )
-
-        active_monitors[data.tg_id] = task
+        start_monitor(data.tg_id, data.search_url)
 
         return {"status": "monitor started"}
 
     finally:
         connection.close()
+
 
 
 

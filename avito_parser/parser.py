@@ -57,6 +57,8 @@ class AvitoParser:
 
     def parse_once(self, url: str) -> List[AvitoItem]:
 
+        
+
         logger.info(f"Parser: начинаю парсинг {url}")
 
         time.sleep(random.uniform(0.8, 1.5))
@@ -83,6 +85,8 @@ class AvitoParser:
         logger.info(f"Parser: найдено карточек {len(cards)}")
 
         items: List[AvitoItem] = []
+
+        
 
         for card in cards:
             try:
@@ -120,8 +124,10 @@ class AvitoParser:
                         url=href
                     )
                 )
+                
 
             except Exception as e:
                 logger.exception(f"Ошибка карточки: {e}")
+
 
         return items
