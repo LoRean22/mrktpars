@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from loguru import logger
-from core.http_client import http_session, init_http_session
+import core.http_client as http_client
+
 
 
 from avito_parser.models import AvitoItem
@@ -38,9 +39,10 @@ class AvitoParser:
 
     async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
 
-        if http_session is None:
+        if http_client.http_session is None:
             logger.warning("HTTP session was None → initializing manually")
-            await init_http_session()
+            await http_client.init_http_session()
+
 
         await asyncio.sleep(random.uniform(0.8, 1.5))  # возвращаем human delay
 
@@ -61,7 +63,8 @@ class AvitoParser:
             logger.info(f"[PARSER] Proxy {proxy_url}")
 
         try:
-            async with http_session.get(
+            async with http_client.http_session.get(
+
                 url,
                 headers=get_headers(),
                 proxy=proxy_url
