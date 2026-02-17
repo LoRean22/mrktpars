@@ -3,9 +3,6 @@ from loguru import logger
 
 
 class AvitoPlaywrightClient:
-    """
-    ASYNC Playwright клиент для Avito.
-    """
 
     def __init__(self, proxy: str | None = None):
         self.proxy = proxy
@@ -17,15 +14,16 @@ class AvitoPlaywrightClient:
         async with async_playwright() as p:
 
             launch_args = {
-                "headless": False,  # 🚀 ВАЖНО
+                "headless": True,  # 🔥 ВАЖНО для VPS
                 "args": [
                     "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
                 ],
             }
 
-            # 🔥 Если есть прокси — подключаем
+            # 🔥 Подключаем прокси
             if self.proxy:
-                # формат: ip:port:login:pass
                 parts = self.proxy.split(":")
                 if len(parts) == 4:
                     ip, port, login, password = parts
@@ -54,17 +52,17 @@ class AvitoPlaywrightClient:
 
             page = await context.new_page()
 
-            # 🚀 Убираем webdriver
-            await page.evaluate("""
+            # 🔥 Убираем webdriver
+            await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
-                })
+                });
             """)
 
             await page.goto(url, timeout=60000)
 
-            # Ждём реальный рендер
-            await page.wait_for_timeout(5000)
+            # Ждём рендер
+            await page.wait_for_timeout(6000)
 
             html = await page.content()
 
