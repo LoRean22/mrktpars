@@ -304,7 +304,8 @@ async def run_parser(data: RunParser):
                     connection.commit()
 
                     text = f"{item.title}\n{item.url}"
-                    await send_message(data.tg_id, text)
+                    send_message(data.tg_id, text)
+
 
                     sent += 1
                 except:
