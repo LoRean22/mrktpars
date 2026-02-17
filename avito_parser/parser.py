@@ -5,6 +5,7 @@ from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
+from datetime import datetime, timedelta
 import re
 
 from avito_parser.models import AvitoItem
@@ -24,6 +25,7 @@ HEADERS = {
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
+        self.proxy = proxy
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
@@ -46,6 +48,7 @@ class AvitoParser:
                 "https": proxy_url,
             })
 
+
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
@@ -60,11 +63,7 @@ class AvitoParser:
 
         url = self.clean_url(url)
 
-        try:
-            response = self.session.get(url, timeout=20)
-        except Exception as e:
-            logger.error(f"[PARSER ERROR] {e}")
-            return []
+        response = self.session.get(url, timeout=20)
 
         if response.status_code == 429:
             logger.warning("IP забанен (429)")
@@ -103,11 +102,11 @@ class AvitoParser:
                     continue
 
                 item_id = m.group(1)
+
                 title = link.get_text(strip=True)
 
                 price_tag = card.select_one('[data-marker="item-price"]')
                 price = 0
-
                 if price_tag:
                     digits = "".join(c for c in price_tag.text if c.isdigit())
                     if digits:

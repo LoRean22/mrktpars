@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 import pymysql
 
 from avito_parser.parser import AvitoParser
@@ -7,7 +7,7 @@ from core.telegram_sender import send_message
 
 
 # -------------------------
-# DB
+# DB CONNECTION
 # -------------------------
 
 def get_connection():
@@ -20,11 +20,15 @@ def get_connection():
     )
 
 
+# -------------------------
+# ACTIVE TASKS
+# -------------------------
+
 active_monitors = {}
 
 
 # -------------------------
-# PROXY SYSTEM
+# PROXY ROTATION
 # -------------------------
 
 def get_next_proxy():
@@ -34,7 +38,6 @@ def get_next_proxy():
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM proxies
-                WHERE (is_banned=0 OR banned_until < NOW() OR banned_until IS NULL)
                 ORDER BY last_used_at IS NULL DESC, last_used_at ASC
                 LIMIT 1
             """)
@@ -51,27 +54,7 @@ def get_next_proxy():
 
             connection.commit()
 
-            return proxy
-
-    finally:
-        connection.close()
-
-
-def mark_proxy_banned(proxy_id):
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                UPDATE proxies
-                SET is_banned=1,
-                    banned_until=%s
-                WHERE id=%s
-            """, (datetime.now() + timedelta(minutes=10), proxy_id))
-
-            connection.commit()
-
-        print(f"[PROXY BANNED] ID {proxy_id}")
+            return proxy["proxy"]
 
     finally:
         connection.close()
@@ -100,13 +83,9 @@ async def monitor_worker(tg_id: int, search_url: str):
     connection = get_connection()
 
     try:
-        # -------- ПРОГРЕВ --------
-        proxy_row = get_next_proxy()
-        if not proxy_row:
-            print("NO PROXY FOR INIT")
-            return
-
-        parser = AvitoParser(proxy=proxy_row["proxy"])
+        # ---- ПЕРВИЧНЫЙ ПРОГРЕВ (БЕЗ ОТПРАВКИ) ----
+        proxy = get_next_proxy()
+        parser = AvitoParser(proxy=proxy)
         items = parser.parse_once(search_url)
 
         for item in items:
@@ -119,41 +98,20 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         print(f"[MONITOR INIT DONE] {tg_id}")
 
-        # -------- ОСНОВНОЙ ЦИКЛ --------
+        # ---- ОСНОВНОЙ ЦИКЛ ----
         while True:
             await asyncio.sleep(30)
 
-            retry_count = 0
-            items = []
-
-            while retry_count < 5:
-                proxy_row = get_next_proxy()
-
-                if not proxy_row:
-                    print("NO AVAILABLE PROXY")
-                    break
-
-                proxy_id = proxy_row["id"]
-                proxy_value = proxy_row["proxy"]
-
-                print(f"[{tg_id}] Using proxy:", proxy_value)
-
-                parser = AvitoParser(proxy=proxy_value)
-                items = parser.parse_once(search_url)
-
-                if items == []:
-                    print(f"[{tg_id}] Proxy likely banned:", proxy_value)
-                    mark_proxy_banned(proxy_id)
-                    retry_count += 1
-                    continue
-
-                break
-
-            if retry_count == 5:
-                print("ALL PROXIES FAILED")
+            proxy = get_next_proxy()
+            if not proxy:
+                print("NO PROXY AVAILABLE")
                 continue
 
-            # -------- отправка новых --------
+            print(f"[{tg_id}] Using proxy: {proxy}")
+
+            parser = AvitoParser(proxy=proxy)
+            items = parser.parse_once(search_url)
+
             for item in items:
                 with connection.cursor() as cursor:
                     cursor.execute("""
@@ -173,7 +131,9 @@ async def monitor_worker(tg_id: int, search_url: str):
                     connection.commit()
 
                 text = format_message(item)
-                print(f"[{tg_id}] NEW ITEM:", item.id)
+
+                print(f"[{tg_id}] Sending new item:", item.id)
+
                 send_message(tg_id, text)
 
     except asyncio.CancelledError:
@@ -184,7 +144,8 @@ async def monitor_worker(tg_id: int, search_url: str):
 
     finally:
         connection.close()
-        active_monitors.pop(tg_id, None)
+        if tg_id in active_monitors:
+            del active_monitors[tg_id]
 
 
 # -------------------------

@@ -1,20 +1,231 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 import pymysql
-import asyncio
-
-from core.database import get_connection
-
+from datetime import datetime, timedelta
+from avito_parser.parser import AvitoParser
+from core.telegram_sender import send_message
 from core.monitor_manager import monitor_worker, active_monitors
+import asyncio
 
 router = APIRouter()
 
+ADMIN_TG_ID = 5849724815
+
+
+# ----------------------------
+# DB CONNECTION
+# ----------------------------
+
+def get_connection():
+    return pymysql.connect(
+        host="localhost",
+        user="mrktpars_user",
+        password="StrongPassword123!",
+        database="mrktpars",
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+
+# ----------------------------
+# MODELS
+# ----------------------------
+
+class ActivateKey(BaseModel):
+    tg_id: int
+    key: str
+
+
+class AdminKey(BaseModel):
+    tg_id: int
+    subscription_type: str
+    expires_days: int
+
+
+class AddProxy(BaseModel):
+    tg_id: int
+    proxy: str
+
+
+class AdminRequest(BaseModel):
+    tg_id: int
+
+
+class InitUser(BaseModel):
+    tg_id: int
+    username: str | None = None
+
+
+class TrialRequest(BaseModel):
+    tg_id: int
 
 
 class RunParser(BaseModel):
     tg_id: int
     search_url: str
 
+
+def is_admin(tg_id: int):
+    return tg_id == ADMIN_TG_ID
+
+
+# ----------------------------
+# ADMIN
+# ----------------------------
+
+@router.post("/admin/create-key")
+def create_key(data: AdminKey):
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    import secrets
+    new_key = secrets.token_hex(16)
+
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO subscription_keys (`key`, subscription_type, expires_days, used)
+                VALUES (%s, %s, %s, 0)
+            """, (new_key, data.subscription_type, data.expires_days))
+            connection.commit()
+
+        return {"key": new_key}
+
+    finally:
+        connection.close()
+
+
+@router.post("/admin/add-proxy")
+def add_proxy(data: AddProxy):
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO proxies (proxy, is_busy)
+                VALUES (%s, 0)
+            """, (data.proxy,))
+            connection.commit()
+
+        return {"status": "proxy added"}
+
+    finally:
+        connection.close()
+
+
+@router.post("/admin/proxy-stats")
+def proxy_stats(data: AdminRequest):
+
+    if not is_admin(data.tg_id):
+        return {"error": "Not allowed"}
+
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) as total FROM proxies")
+            total = cursor.fetchone()["total"]
+
+            cursor.execute("SELECT COUNT(*) as busy FROM proxies WHERE is_busy=1")
+            busy = cursor.fetchone()["busy"]
+
+        return {"total": total, "busy": busy}
+
+    finally:
+        connection.close()
+
+
+# ----------------------------
+# INIT USER
+# ----------------------------
+
+@router.post("/users/init")
+def init_user(data: InitUser):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                cursor.execute(
+                    "INSERT INTO users (tg_id) VALUES (%s)",
+                    (data.tg_id,)
+                )
+                connection.commit()
+
+                cursor.execute(
+                    "SELECT * FROM users WHERE tg_id=%s",
+                    (data.tg_id,)
+                )
+                user = cursor.fetchone()
+
+        return {
+            "subscription_type": user["subscription_type"],
+            "subscription_expires": user["subscription_expires"]
+        }
+
+    finally:
+        connection.close()
+
+
+# ----------------------------
+# TRIAL
+# ----------------------------
+
+@router.post("/users/trial")
+def activate_trial(data: TrialRequest):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                return {"error": "User not found"}
+
+            if user["trial_used"] == 1:
+                return {"error": "Вы уже использовали пробный период"}
+
+            expires = datetime.now() + timedelta(days=2)
+
+            cursor.execute("""
+                UPDATE users
+                SET subscription_type=%s,
+                    subscription_expires=%s,
+                    trial_used=1
+                WHERE tg_id=%s
+            """, ("basic", expires, data.tg_id))
+
+            connection.commit()
+
+        return {"status": "trial activated"}
+
+    finally:
+        connection.close()
+
+
+# ----------------------------
+# RUN PARSER
+# ----------------------------
+
+# ----------------------------
+# RUN PARSER
+# ----------------------------
 
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
@@ -34,18 +245,24 @@ async def run_parser(data: RunParser):
         if not user:
             return {"error": "User not found"}
 
-        # 1 пользователь = 1 ссылка
+        # ---- сохраняем ссылку ----
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM searches WHERE tg_id=%s", (data.tg_id,))
+            cursor.execute("""
+                DELETE FROM searches WHERE tg_id=%s
+            """, (data.tg_id,))
+
             cursor.execute("""
                 INSERT INTO searches (tg_id, search_url, is_active)
                 VALUES (%s, %s, 1)
             """, (data.tg_id, data.search_url))
+
             connection.commit()
 
+        # ---- если уже запущен монитор — не запускаем второй ----
         if data.tg_id in active_monitors:
             return {"status": "already running"}
 
+        # ---- запускаем фоновую задачу ----
         task = asyncio.create_task(
             monitor_worker(data.tg_id, data.search_url)
         )
@@ -56,3 +273,63 @@ async def run_parser(data: RunParser):
 
     finally:
         connection.close()
+
+
+
+
+# ----------------------------
+# ACTIVATE KEY
+# ----------------------------
+
+@router.post("/users/activate-key")
+def activate_key(data: ActivateKey):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                "SELECT * FROM users WHERE tg_id=%s",
+                (data.tg_id,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                return {"error": "User not found"}
+
+            cursor.execute(
+                "SELECT * FROM subscription_keys WHERE `key`=%s",
+                (data.key,)
+            )
+            key_row = cursor.fetchone()
+
+            if not key_row:
+                return {"error": "Ключ не найден"}
+
+            if key_row["used"] == 1:
+                return {"error": "Ключ уже использован"}
+
+            expires = datetime.now() + timedelta(days=key_row["expires_days"])
+
+            cursor.execute("""
+                UPDATE users
+                SET subscription_type=%s,
+                    subscription_expires=%s
+                WHERE tg_id=%s
+            """, (key_row["subscription_type"], expires, data.tg_id))
+
+            cursor.execute("""
+                UPDATE subscription_keys
+                SET used=1,
+                    used_by=%s,
+                    used_at=%s
+                WHERE id=%s
+            """, (user["id"], datetime.now(), key_row["id"]))
+
+            connection.commit()
+
+        return {"status": "activated"}
+
+    finally:
+        connection.close()           
