@@ -1,11 +1,11 @@
 import requests
 import random
-import re
 import time
-from typing import List, Tuple
+from typing import List
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs, urlencode
 from loguru import logger
+from urllib.parse import urlparse, parse_qs, urlencode
+import re
 
 from avito_parser.models import AvitoItem
 
@@ -20,8 +20,6 @@ def get_headers():
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
         ]),
         "Accept-Language": "ru-RU,ru;q=0.9",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     }
 
 
@@ -32,7 +30,9 @@ class AvitoParser:
         self.session.headers.update(get_headers())
 
         if proxy:
+            logger.info(f"[PARSER] Using proxy {proxy}")
             parts = proxy.split(":")
+
             if len(parts) == 4:
                 ip, port, login, password = parts
                 proxy_url = f"http://{login}:{password}@{ip}:{port}"
@@ -44,7 +44,7 @@ class AvitoParser:
 
             self.session.proxies.update({
                 "http": proxy_url,
-                "https": proxy_url
+                "https": proxy_url,
             })
 
     def clean_url(self, url: str) -> str:
@@ -53,24 +53,25 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
+    def parse_once(self, url: str) -> List[AvitoItem]:
 
         url = self.clean_url(url)
 
-        try:
-            time.sleep(random.uniform(1.0, 2.5))  # анти-детект
+        logger.info(f"[REQUESTS] Parsing {url}")
 
+        time.sleep(random.uniform(0.8, 1.5))
+
+        try:
             response = self.session.get(url, timeout=20)
 
-            status = response.status_code
-            logger.info(f"[REQUESTS] Status {status}")
+            logger.info(f"[REQUESTS] Status {response.status_code}")
 
-            if status != 200:
-                return [], status
+            if response.status_code != 200:
+                return []
 
             if "Доступ ограничен" in response.text:
-                logger.warning("Access restricted")
-                return [], 403
+                logger.warning("[PARSER] Access restricted")
+                return []
 
             soup = BeautifulSoup(response.text, "lxml")
             cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
@@ -78,46 +79,47 @@ class AvitoParser:
             items: List[AvitoItem] = []
 
             for card in cards:
-                link = card.select_one('a[data-marker="item-title"]')
-                if not link:
-                    continue
+                try:
+                    link = card.select_one('a[data-marker="item-title"]')
+                    if not link:
+                        continue
 
-                href = link.get("href")
-                if not href:
-                    continue
+                    href = link.get("href")
+                    if not href:
+                        continue
 
-                if href.startswith("/"):
-                    href = "https://www.avito.ru" + href
+                    if href.startswith("/"):
+                        href = "https://www.avito.ru" + href
 
-                m = re.search(r'_(\d+)$', href.split("?")[0])
-                if not m:
-                    continue
+                    m = re.search(r'_(\d+)$', href.split("?")[0])
+                    if not m:
+                        continue
 
-                item_id = m.group(1)
-                title = link.get_text(strip=True)
+                    item_id = m.group(1)
+                    title = link.get_text(strip=True)
 
-                price_tag = card.select_one('[data-marker="item-price"]')
-                price = 0
-                if price_tag:
-                    digits = "".join(c for c in price_tag.text if c.isdigit())
-                    if digits:
-                        price = int(digits)
+                    price_tag = card.select_one('[data-marker="item-price"]')
+                    price = 0
+                    if price_tag:
+                        digits = "".join(c for c in price_tag.text if c.isdigit())
+                        if digits:
+                            price = int(digits)
 
-                items.append(
-                    AvitoItem(
-                        id=item_id,
-                        title=title,
-                        price=price,
-                        url=href
+                    items.append(
+                        AvitoItem(
+                            id=item_id,
+                            title=title,
+                            price=price,
+                            url=href
+                        )
                     )
-                )
 
-            logger.info(f"[REQUESTS] Found {len(items)} items")
+                except Exception as e:
+                    logger.exception(f"[CARD ERROR] {e}")
 
-            return items, 200
+            logger.info(f"[PARSER] Found {len(items)} items")
+            return items
 
-        except requests.exceptions.Timeout:
-            return [], 408
         except Exception as e:
-            logger.exception(f"[REQUESTS ERROR] {e}")
-            return [], 500
+            logger.exception(f"[PARSER ERROR] {e}")
+            return []

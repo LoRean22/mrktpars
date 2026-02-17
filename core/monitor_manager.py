@@ -1,24 +1,23 @@
 import asyncio
 from datetime import datetime
-import random
-
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 from core.database import get_connection
-
 
 active_monitors = {}
 
 
 def get_next_proxy(connection):
     with connection.cursor() as cursor:
-        cursor.execute("SELECT * FROM proxies ORDER BY id ASC")
+        cursor.execute("""
+            SELECT * FROM proxies
+            ORDER BY id ASC
+        """)
         proxies = cursor.fetchall()
 
     if not proxies:
         return None
 
-    # простая ротация
     proxy = proxies[int(datetime.now().timestamp()) % len(proxies)]
     return proxy["proxy"]
 
@@ -30,7 +29,7 @@ async def monitor_worker(tg_id: int, search_url: str):
     connection = get_connection()
 
     try:
-        # ---------------- INIT ----------------
+        # ---------- INIT PHASE ----------
         proxy = get_next_proxy(connection)
         parser = AvitoParser(proxy=proxy)
 
@@ -46,12 +45,12 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         print("[INIT DONE]")
 
-        # ---------------- LOOP ----------------
+        # ---------- MAIN LOOP ----------
         while True:
 
-            sleep_time = random.uniform(60, 120)
-            print(f"[SLEEP {round(sleep_time, 2)} sec]")
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(30)
+
+            print(f"[CHECKING NEW ITEMS] {tg_id}")
 
             proxy = get_next_proxy(connection)
             parser = AvitoParser(proxy=proxy)
@@ -78,7 +77,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 text = f"{item.title}\nЦена: {item.price} ₽\n{item.url}"
 
-                print("[NEW ITEM]", item.id)
+                print("[NEW ITEM FOUND]", item.id)
                 send_message(tg_id, text)
 
     except asyncio.CancelledError:
@@ -90,3 +89,17 @@ async def monitor_worker(tg_id: int, search_url: str):
     finally:
         connection.close()
         active_monitors.pop(tg_id, None)
+
+
+def start_monitor(tg_id: int, url: str):
+    if tg_id in active_monitors:
+        return
+
+    task = asyncio.create_task(monitor_worker(tg_id, url))
+    active_monitors[tg_id] = task
+
+
+def stop_monitor(tg_id: int):
+    task = active_monitors.get(tg_id)
+    if task:
+        task.cancel()
