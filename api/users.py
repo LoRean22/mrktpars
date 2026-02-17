@@ -67,157 +67,6 @@ def is_admin(tg_id: int):
 
 
 # ----------------------------
-# ADMIN
-# ----------------------------
-
-@router.post("/admin/create-key")
-def create_key(data: AdminKey):
-
-    if not is_admin(data.tg_id):
-        return {"error": "Not allowed"}
-
-    import secrets
-    new_key = secrets.token_hex(16)
-
-    connection = get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO subscription_keys (`key`, subscription_type, expires_days, used)
-                VALUES (%s, %s, %s, 0)
-            """, (new_key, data.subscription_type, data.expires_days))
-            connection.commit()
-
-        return {"key": new_key}
-
-    finally:
-        connection.close()
-
-
-@router.post("/admin/add-proxy")
-def add_proxy(data: AddProxy):
-
-    if not is_admin(data.tg_id):
-        return {"error": "Not allowed"}
-
-    connection = get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO proxies (proxy, is_busy)
-                VALUES (%s, 0)
-            """, (data.proxy,))
-            connection.commit()
-
-        return {"status": "proxy added"}
-
-    finally:
-        connection.close()
-
-
-@router.post("/admin/proxy-stats")
-def proxy_stats(data: AdminRequest):
-
-    if not is_admin(data.tg_id):
-        return {"error": "Not allowed"}
-
-    connection = get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) as total FROM proxies")
-            total = cursor.fetchone()["total"]
-
-            cursor.execute("SELECT COUNT(*) as busy FROM proxies WHERE is_busy=1")
-            busy = cursor.fetchone()["busy"]
-
-        return {"total": total, "busy": busy}
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# INIT USER
-# ----------------------------
-
-@router.post("/users/init")
-def init_user(data: InitUser):
-
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT * FROM users WHERE tg_id=%s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                cursor.execute(
-                    "INSERT INTO users (tg_id) VALUES (%s)",
-                    (data.tg_id,)
-                )
-                connection.commit()
-
-                cursor.execute(
-                    "SELECT * FROM users WHERE tg_id=%s",
-                    (data.tg_id,)
-                )
-                user = cursor.fetchone()
-
-        return {
-            "subscription_type": user["subscription_type"],
-            "subscription_expires": user["subscription_expires"]
-        }
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
-# TRIAL
-# ----------------------------
-
-@router.post("/users/trial")
-def activate_trial(data: TrialRequest):
-
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT * FROM users WHERE tg_id=%s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                return {"error": "User not found"}
-
-            if user["trial_used"] == 1:
-                return {"error": "Вы уже использовали пробный период"}
-
-            expires = datetime.now() + timedelta(days=2)
-
-            cursor.execute("""
-                UPDATE users
-                SET subscription_type=%s,
-                    subscription_expires=%s,
-                    trial_used=1
-                WHERE tg_id=%s
-            """, ("basic", expires, data.tg_id))
-
-            connection.commit()
-
-        return {"status": "trial activated"}
-
-    finally:
-        connection.close()
-
-
-# ----------------------------
 # RUN PARSER
 # ----------------------------
 
@@ -225,7 +74,6 @@ def activate_trial(data: TrialRequest):
 async def run_parser(data: RunParser):
 
     print("RUN_PARSER CALLED")
-
 
     connection = get_connection()
     proxy_id = None
@@ -242,12 +90,12 @@ async def run_parser(data: RunParser):
             if not user:
                 return {"error": "User not found"}
 
-            user_id = user["id"]
             now = datetime.now()
 
+            # ---------- ПРОВЕРКА ПЕРЕЗАПУСКА ----------
             cursor.execute(
-                "SELECT * FROM searches WHERE user_id=%s",
-                (user_id,)
+                "SELECT * FROM searches WHERE tg_id=%s",
+                (data.tg_id,)
             )
             search = cursor.fetchone()
 
@@ -259,13 +107,13 @@ async def run_parser(data: RunParser):
                 cursor.execute("""
                     UPDATE searches
                     SET search_url=%s, last_run=%s
-                    WHERE user_id=%s
-                """, (data.search_url, now, user_id))
+                    WHERE tg_id=%s
+                """, (data.search_url, now, data.tg_id))
             else:
                 cursor.execute("""
-                    INSERT INTO searches (user_id, search_url, last_run)
+                    INSERT INTO searches (tg_id, search_url, last_run)
                     VALUES (%s, %s, %s)
-                """, (user_id, data.search_url, now))
+                """, (data.tg_id, data.search_url, now))
 
             connection.commit()
 
@@ -292,18 +140,28 @@ async def run_parser(data: RunParser):
         parser = AvitoParser(proxy=proxy_value)
         items = parser.parse_once(data.search_url)
 
-
-
+        print("ITEMS FOUND:", len(items))
 
         sent = 0
 
         with connection.cursor() as cursor:
             for item in items:
                 try:
+                    # Проверяем дубликат
                     cursor.execute("""
-                        INSERT INTO parsed_items (user_id, item_id)
-                        VALUES (%s, %s)
-                    """, (user_id, item.id))
+                        SELECT id FROM parsed_items
+                        WHERE tg_id=%s AND item_id=%s
+                    """, (data.tg_id, item.id))
+
+                    if cursor.fetchone():
+                        continue
+
+                    # Вставляем
+                    cursor.execute("""
+                        INSERT INTO parsed_items (tg_id, item_id, created_at)
+                        VALUES (%s, %s, NOW())
+                    """, (data.tg_id, item.id))
+
                     connection.commit()
 
                     text = f"{item.title}\n{item.url}"
@@ -311,18 +169,16 @@ async def run_parser(data: RunParser):
                     print("SENDING TO TG:", data.tg_id)
                     print("TEXT:", text)
 
-                    await send_message(data.tg_id, text)
+                    send_message(data.tg_id, text)
 
                     sent += 1
 
                 except Exception as e:
                     print("SEND ERROR:", e)
 
-
         return {"status": "ok", "sent": sent}
 
     finally:
-        # Освобождаем прокси всегда
         if proxy_id:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -331,68 +187,4 @@ async def run_parser(data: RunParser):
                 )
                 connection.commit()
 
-        connection.close()
-
-
-        parser = AvitoParser(proxy=proxy_value)
-        items = parser.parse_once(data.search_url)
-
-        print("ITEMS COUNT:", len(items))
-
-
-# ----------------------------
-# ACTIVATE KEY
-# ----------------------------
-
-@router.post("/users/activate-key")
-def activate_key(data: ActivateKey):
-
-    connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-
-            cursor.execute(
-                "SELECT * FROM users WHERE tg_id=%s",
-                (data.tg_id,)
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                return {"error": "User not found"}
-
-            cursor.execute(
-                "SELECT * FROM subscription_keys WHERE `key`=%s",
-                (data.key,)
-            )
-            key_row = cursor.fetchone()
-
-            if not key_row:
-                return {"error": "Ключ не найден"}
-
-            if key_row["used"] == 1:
-                return {"error": "Ключ уже использован"}
-
-            expires = datetime.now() + timedelta(days=key_row["expires_days"])
-
-            cursor.execute("""
-                UPDATE users
-                SET subscription_type=%s,
-                    subscription_expires=%s
-                WHERE tg_id=%s
-            """, (key_row["subscription_type"], expires, data.tg_id))
-
-            cursor.execute("""
-                UPDATE subscription_keys
-                SET used=1,
-                    used_by=%s,
-                    used_at=%s
-                WHERE id=%s
-            """, (user["id"], datetime.now(), key_row["id"]))
-
-            connection.commit()
-
-        return {"status": "activated"}
-
-    finally:
         connection.close()
