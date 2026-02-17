@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("8529435887:AAHjrDxKJ8CBBtagAWb4zZ7mtJaiEfTc5S0")
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
