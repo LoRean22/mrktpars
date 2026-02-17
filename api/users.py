@@ -7,7 +7,7 @@ from core.telegram_sender import send_message
 
 router = APIRouter()
 
-ADMIN_TG_ID = 5849724815 
+ADMIN_TG_ID = 5849724815
 
 
 # ----------------------------
@@ -23,22 +23,52 @@ def get_connection():
         cursorclass=pymysql.cursors.DictCursor
     )
 
+
+# ----------------------------
+# MODELS
+# ----------------------------
+
 class ActivateKey(BaseModel):
     tg_id: int
     key: str
+
 
 class AdminKey(BaseModel):
     tg_id: int
     subscription_type: str
     expires_days: int
 
+
 class AddProxy(BaseModel):
     tg_id: int
     proxy: str
 
+
+class AdminRequest(BaseModel):
+    tg_id: int
+
+
+class InitUser(BaseModel):
+    tg_id: int
+    username: str | None = None
+
+
+class TrialRequest(BaseModel):
+    tg_id: int
+
+
+class RunParser(BaseModel):
+    tg_id: int
+    search_url: str
+
+
 def is_admin(tg_id: int):
     return tg_id == ADMIN_TG_ID
 
+
+# ----------------------------
+# ADMIN
+# ----------------------------
 
 @router.post("/admin/create-key")
 def create_key(data: AdminKey):
@@ -47,16 +77,14 @@ def create_key(data: AdminKey):
         return {"error": "Not allowed"}
 
     import secrets
-
     new_key = secrets.token_hex(16)
 
     connection = get_connection()
-
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO subscription_keys (`key`, subscription_type, expires_days)
-                VALUES (%s, %s, %s)
+                INSERT INTO subscription_keys (`key`, subscription_type, expires_days, used)
+                VALUES (%s, %s, %s, 0)
             """, (new_key, data.subscription_type, data.expires_days))
             connection.commit()
 
@@ -73,12 +101,11 @@ def add_proxy(data: AddProxy):
         return {"error": "Not allowed"}
 
     connection = get_connection()
-
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO proxies (proxy)
-                VALUES (%s)
+                INSERT INTO proxies (proxy, is_busy)
+                VALUES (%s, 0)
             """, (data.proxy,))
             connection.commit()
 
@@ -88,18 +115,13 @@ def add_proxy(data: AddProxy):
         connection.close()
 
 
-class AdminRequest(BaseModel):
-    tg_id: int
-
 @router.post("/admin/proxy-stats")
 def proxy_stats(data: AdminRequest):
-
 
     if not is_admin(data.tg_id):
         return {"error": "Not allowed"}
 
     connection = get_connection()
-
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) as total FROM proxies")
@@ -108,31 +130,10 @@ def proxy_stats(data: AdminRequest):
             cursor.execute("SELECT COUNT(*) as busy FROM proxies WHERE is_busy=1")
             busy = cursor.fetchone()["busy"]
 
-        return {
-            "total": total,
-            "busy": busy
-        }
+        return {"total": total, "busy": busy}
 
     finally:
         connection.close()
-
-
-# ----------------------------
-# MODELS
-# ----------------------------
-
-class InitUser(BaseModel):
-    tg_id: int
-    username: str | None = None
-
-
-class TrialRequest(BaseModel):
-    tg_id: int
-
-
-class RunParser(BaseModel):
-    tg_id: int
-    search_url: str
 
 
 # ----------------------------
@@ -146,7 +147,6 @@ def init_user(data: InitUser):
 
     try:
         with connection.cursor() as cursor:
-
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id=%s",
                 (data.tg_id,)
@@ -201,16 +201,13 @@ def activate_trial(data: TrialRequest):
 
             expires = datetime.now() + timedelta(days=2)
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE users
                 SET subscription_type=%s,
                     subscription_expires=%s,
                     trial_used=1
                 WHERE tg_id=%s
-                """,
-                ("basic", expires, data.tg_id)
-            )
+            """, ("basic", expires, data.tg_id))
 
             connection.commit()
 
@@ -228,6 +225,7 @@ def activate_trial(data: TrialRequest):
 async def run_parser(data: RunParser):
 
     connection = get_connection()
+    proxy_id = None
 
     try:
         with connection.cursor() as cursor:
@@ -242,7 +240,6 @@ async def run_parser(data: RunParser):
                 return {"error": "User not found"}
 
             user_id = user["id"]
-
             now = datetime.now()
 
             cursor.execute(
@@ -256,56 +253,74 @@ async def run_parser(data: RunParser):
                     return {"error": "Подождите 1 минуту"}
 
             if search:
-                cursor.execute(
-                    """
+                cursor.execute("""
                     UPDATE searches
                     SET search_url=%s, last_run=%s
                     WHERE user_id=%s
-                    """,
-                    (data.search_url, now, user_id)
-                )
+                """, (data.search_url, now, user_id))
             else:
-                cursor.execute(
-                    """
+                cursor.execute("""
                     INSERT INTO searches (user_id, search_url, last_run)
-                    VALUES (%s,%s,%s)
-                    """,
-                    (user_id, data.search_url, now)
-                )
+                    VALUES (%s, %s, %s)
+                """, (user_id, data.search_url, now))
 
             connection.commit()
 
-        # 🔥 Запуск парсера
-        parser = AvitoParser()
+        # ---------- БЕРЕМ ПРОКСИ ----------
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM proxies WHERE is_busy=0 LIMIT 1"
+            )
+            proxy_row = cursor.fetchone()
+
+            if not proxy_row:
+                return {"error": "Нет свободных прокси"}
+
+            proxy_id = proxy_row["id"]
+            proxy_value = proxy_row["proxy"]
+
+            cursor.execute(
+                "UPDATE proxies SET is_busy=1 WHERE id=%s",
+                (proxy_id,)
+            )
+            connection.commit()
+
+        # ---------- ПАРСИНГ ----------
+        parser = AvitoParser(proxy=proxy_value)
         items = await parser.parse_once(data.search_url)
 
         sent = 0
 
         with connection.cursor() as cursor:
             for item in items:
-
                 try:
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         INSERT INTO parsed_items (user_id, item_id)
-                        VALUES (%s,%s)
-                        """,
-                        (user_id, item.id)
-                    )
+                        VALUES (%s, %s)
+                    """, (user_id, item.id))
                     connection.commit()
 
                     text = f"{item.title}\n{item.url}"
                     await send_message(data.tg_id, text)
 
                     sent += 1
-
                 except:
                     continue
 
         return {"status": "ok", "sent": sent}
 
     finally:
+        # Освобождаем прокси всегда
+        if proxy_id:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE proxies SET is_busy=0 WHERE id=%s",
+                    (proxy_id,)
+                )
+                connection.commit()
+
         connection.close()
+
 
 # ----------------------------
 # ACTIVATE KEY
@@ -319,7 +334,6 @@ def activate_key(data: ActivateKey):
     try:
         with connection.cursor() as cursor:
 
-            # Проверяем пользователя
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id=%s",
                 (data.tg_id,)
@@ -329,7 +343,6 @@ def activate_key(data: ActivateKey):
             if not user:
                 return {"error": "User not found"}
 
-            # Проверяем ключ
             cursor.execute(
                 "SELECT * FROM subscription_keys WHERE `key`=%s",
                 (data.key,)
@@ -342,30 +355,22 @@ def activate_key(data: ActivateKey):
             if key_row["used"] == 1:
                 return {"error": "Ключ уже использован"}
 
-            # Активируем подписку
             expires = datetime.now() + timedelta(days=key_row["expires_days"])
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE users
                 SET subscription_type=%s,
                     subscription_expires=%s
                 WHERE tg_id=%s
-                """,
-                (key_row["subscription_type"], expires, data.tg_id)
-            )
+            """, (key_row["subscription_type"], expires, data.tg_id))
 
-            # Помечаем ключ как использованный
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE subscription_keys
                 SET used=1,
                     used_by=%s,
                     used_at=%s
                 WHERE id=%s
-                """,
-                (user["id"], datetime.now(), key_row["id"])
-            )
+            """, (user["id"], datetime.now(), key_row["id"]))
 
             connection.commit()
 
