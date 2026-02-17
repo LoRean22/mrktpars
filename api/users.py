@@ -4,6 +4,8 @@ import pymysql
 from datetime import datetime, timedelta
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
+from core.monitor_manager import monitor_worker, active_monitors
+import asyncio
 
 router = APIRouter()
 
@@ -228,17 +230,11 @@ def activate_trial(data: TrialRequest):
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
 
-    print("========== RUN_PARSER START ==========")
-    print("TG_ID:", data.tg_id)
-    print("SEARCH_URL:", data.search_url)
+    print("START MONITOR REQUEST:", data.tg_id)
 
     connection = get_connection()
-    proxy_id = None
-    proxy_value = None
 
     try:
-        # ---------------- USER CHECK ----------------
-        print("Checking user...")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id=%s",
@@ -247,106 +243,37 @@ async def run_parser(data: RunParser):
             user = cursor.fetchone()
 
         if not user:
-            print("User not found!")
             return {"error": "User not found"}
 
-        print("User OK. ID:", user["id"])
-
-        # ---------------- PROXY ----------------
-        print("Looking for free proxy...")
+        # ---- сохраняем ссылку ----
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT * FROM proxies WHERE is_busy=0 LIMIT 1"
-            )
-            proxy_row = cursor.fetchone()
+            cursor.execute("""
+                DELETE FROM searches WHERE tg_id=%s
+            """, (data.tg_id,))
 
-            if not proxy_row:
-                print("NO FREE PROXY")
-                return {"error": "Нет свободных прокси"}
+            cursor.execute("""
+                INSERT INTO searches (tg_id, search_url, is_active)
+                VALUES (%s, %s, 1)
+            """, (data.tg_id, data.search_url))
 
-            proxy_id = proxy_row["id"]
-            proxy_value = proxy_row["proxy"]
-
-            print("Proxy selected:", proxy_value)
-
-            cursor.execute(
-                "UPDATE proxies SET is_busy=1 WHERE id=%s",
-                (proxy_id,)
-            )
             connection.commit()
 
-        # ---------------- PARSING ----------------
-        print("Starting parser...")
-        parser = AvitoParser(proxy=proxy_value)
-        items = parser.parse_once(data.search_url)
+        # ---- если уже запущен монитор — не запускаем второй ----
+        if data.tg_id in active_monitors:
+            return {"status": "already running"}
 
-        print("Parser finished.")
-        print("Items found:", len(items))
+        # ---- запускаем фоновую задачу ----
+        task = asyncio.create_task(
+            monitor_worker(data.tg_id, data.search_url)
+        )
 
-        sent = 0
+        active_monitors[data.tg_id] = task
 
-        # ---------------- PROCESS ITEMS ----------------
-        for item in items:
-            print("Processing item:", item.id)
-
-            try:
-                with connection.cursor() as cursor:
-
-                    # Проверка дубля
-                    cursor.execute("""
-                        SELECT id FROM parsed_items
-                        WHERE tg_id=%s AND item_id=%s
-                    """, (data.tg_id, item.id))
-
-                    exists = cursor.fetchone()
-
-                    if exists:
-                        print("Duplicate, skipping:", item.id)
-                        continue
-
-                    # Вставка
-                    cursor.execute("""
-                        INSERT INTO parsed_items (tg_id, item_id, created_at)
-                        VALUES (%s, %s, %s)
-                    """, (data.tg_id, item.id, datetime.now()))
-
-                    connection.commit()
-
-                text = f"{item.title}\n{item.url}"
-
-                print("Sending to Telegram...")
-                print("CHAT_ID:", data.tg_id)
-                print("TEXT:", text)
-
-                tg_status = send_message(data.tg_id, text)
-
-                print("Telegram status:", tg_status)
-
-                sent += 1
-
-            except Exception as e:
-                print("ITEM ERROR:", e)
-
-        print("Total sent:", sent)
-        print("========== RUN_PARSER END ==========")
-
-        return {"status": "ok", "sent": sent}
-
-    except Exception as e:
-        print("GLOBAL ERROR:", e)
-        return {"error": str(e)}
+        return {"status": "monitor started"}
 
     finally:
-        if proxy_id:
-            print("Releasing proxy:", proxy_id)
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE proxies SET is_busy=0 WHERE id=%s",
-                    (proxy_id,)
-                )
-                connection.commit()
-
         connection.close()
+
 
 
 
