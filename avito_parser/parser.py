@@ -32,10 +32,22 @@ class AvitoParser:
         if proxy:
             logger.info(f"Parser: использую прокси {proxy}")
 
+            parts = proxy.split(":")
+
+            if len(parts) == 4:
+                ip, port, login, password = parts
+                proxy_url = f"http://{login}:{password}@{ip}:{port}"
+            elif len(parts) == 2:
+                ip, port = parts
+                proxy_url = f"http://{ip}:{port}"
+            else:
+                raise ValueError("Неверный формат прокси")
+
             self.session.proxies.update({
-                "http": f"http://{proxy}",
-                "https": f"http://{proxy}",
+                "http": proxy_url,
+                "https": proxy_url,
             })
+
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
