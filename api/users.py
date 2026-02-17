@@ -228,95 +228,83 @@ def activate_trial(data: TrialRequest):
 @router.post("/users/run-parser")
 async def run_parser(data: RunParser):
 
-    print("RUN_PARSER CALLED")
+    print("========== RUN_PARSER START ==========")
+    print("TG_ID:", data.tg_id)
+    print("SEARCH_URL:", data.search_url)
 
     connection = get_connection()
     proxy_id = None
+    proxy_value = None
 
     try:
+        # ---------------- USER CHECK ----------------
+        print("Checking user...")
         with connection.cursor() as cursor:
-
             cursor.execute(
                 "SELECT * FROM users WHERE tg_id=%s",
                 (data.tg_id,)
             )
             user = cursor.fetchone()
 
-            if not user:
-                return {"error": "User not found"}
+        if not user:
+            print("User not found!")
+            return {"error": "User not found"}
 
-            user_id = user["id"]
-            now = datetime.now()
+        print("User OK. ID:", user["id"])
 
-            cursor.execute(
-                "SELECT * FROM searches WHERE user_id=%s",
-                (user_id,)
-            )
-            search = cursor.fetchone()
-
-            if search and search["last_run"]:
-                if now - search["last_run"] < timedelta(minutes=1):
-                    return {"error": "Подождите 1 минуту"}
-
-            if search:
-                cursor.execute("""
-                    UPDATE searches
-                    SET search_url=%s, last_run=%s
-                    WHERE user_id=%s
-                """, (data.search_url, now, user_id))
-            else:
-                cursor.execute("""
-                    INSERT INTO searches (user_id, search_url, last_run)
-                    VALUES (%s, %s, %s)
-                """, (user_id, data.search_url, now))
-
-            connection.commit()
-
-        # ---------- БЕРЕМ ПРОКСИ ----------
-        proxy_value = None
-
+        # ---------------- PROXY ----------------
+        print("Looking for free proxy...")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM proxies WHERE is_busy=0 LIMIT 1"
             )
             proxy_row = cursor.fetchone()
-            
 
-            if proxy_row:
-                proxy_id = proxy_row["id"]
-                proxy_value = proxy_row["proxy"]
-
-                cursor.execute(
-                    "UPDATE proxies SET is_busy=1 WHERE id=%s",
-                    (proxy_id,)
-                )
-                connection.commit()
-            else:
-                print("Нет свободных прокси")
+            if not proxy_row:
+                print("NO FREE PROXY")
                 return {"error": "Нет свободных прокси"}
-            
-            
 
-        # ---------- ПАРСИНГ ----------
+            proxy_id = proxy_row["id"]
+            proxy_value = proxy_row["proxy"]
+
+            print("Proxy selected:", proxy_value)
+
+            cursor.execute(
+                "UPDATE proxies SET is_busy=1 WHERE id=%s",
+                (proxy_id,)
+            )
+            connection.commit()
+
+        # ---------------- PARSING ----------------
+        print("Starting parser...")
         parser = AvitoParser(proxy=proxy_value)
         items = parser.parse_once(data.search_url)
 
+        print("Parser finished.")
+        print("Items found:", len(items))
+
         sent = 0
 
-        with connection.cursor() as cursor:
-            for item in items:
-                try:
-                    # проверяем дубль по tg_id + item_id
+        # ---------------- PROCESS ITEMS ----------------
+        for item in items:
+            print("Processing item:", item.id)
+
+            try:
+                with connection.cursor() as cursor:
+
+                    # Проверка дубля
                     cursor.execute("""
                         SELECT id FROM parsed_items
                         WHERE tg_id=%s AND item_id=%s
                     """, (data.tg_id, item.id))
 
                     exists = cursor.fetchone()
+
                     if exists:
+                        print("Duplicate, skipping:", item.id)
                         continue
 
-                    # вставляем под ТВОЮ структуру
+                    # Вставка
                     cursor.execute("""
                         INSERT INTO parsed_items (tg_id, item_id, created_at)
                         VALUES (%s, %s, %s)
@@ -324,23 +312,33 @@ async def run_parser(data: RunParser):
 
                     connection.commit()
 
-                    text = f"{item.title}\n{item.url}"
+                text = f"{item.title}\n{item.url}"
 
-                    print("SENDING TO TG:", data.tg_id)
-                    print("TEXT:", text)
+                print("Sending to Telegram...")
+                print("CHAT_ID:", data.tg_id)
+                print("TEXT:", text)
 
-                    send_message(data.tg_id, text)
+                tg_status = send_message(data.tg_id, text)
 
+                print("Telegram status:", tg_status)
 
-                    sent += 1
+                sent += 1
 
-                except Exception as e:
-                    print("SEND ERROR:", e)
+            except Exception as e:
+                print("ITEM ERROR:", e)
+
+        print("Total sent:", sent)
+        print("========== RUN_PARSER END ==========")
 
         return {"status": "ok", "sent": sent}
 
+    except Exception as e:
+        print("GLOBAL ERROR:", e)
+        return {"error": str(e)}
+
     finally:
         if proxy_id:
+            print("Releasing proxy:", proxy_id)
             with connection.cursor() as cursor:
                 cursor.execute(
                     "UPDATE proxies SET is_busy=0 WHERE id=%s",
@@ -350,12 +348,6 @@ async def run_parser(data: RunParser):
 
         connection.close()
 
-
-
-        parser = AvitoParser(proxy=proxy_value)
-        items = parser.parse_once(data.search_url)
-
-        print("ITEMS COUNT:", len(items))
 
 
 # ----------------------------
