@@ -1,25 +1,24 @@
-import aiohttp
+import requests
 import os
-from loguru import logger
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-async def send_message(tg_id: int, text: str):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BASE_URL}/sendMessage",
-                json={
-                    "chat_id": tg_id,
-                    "text": text
-                }
-            ) as response:
+def send_message(tg_id: int, text: str):
+    r = requests.post(
+        f"{BASE_URL}/sendMessage",
+        json={
+            "chat_id": tg_id,
+            "text": text
+        },
+        timeout=10
+    )
 
-                logger.info(f"[TELEGRAM] Sent to {tg_id} → status {response.status}")
-                return response.status
+    print("TG STATUS:", r.status_code)
+    print("TG RESPONSE:", r.text)
 
-    except Exception as e:
-        logger.exception(f"[TELEGRAM] Error sending message: {e}")
-        return 500
+    return r.status_code
