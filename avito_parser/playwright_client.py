@@ -11,6 +11,13 @@ class AvitoPlaywrightClient:
         logger.info(f"Playwright: открываю {url}")
         logger.info(f"Playwright: прокси = {self.proxy}")
 
+        html = await page.content()
+
+        # 🔥 ДИАГНОСТИКА
+        with open("debug_avito.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
+
         async with async_playwright() as p:
 
             launch_args = {
