@@ -1,16 +1,14 @@
 import requests
 import os
 from dotenv import load_dotenv
-from pathlib import Path
 
-# Явно указываем путь
-env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
+# просто грузим .env из текущей директории
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError(f"BOT_TOKEN not found in {env_path}")
+    raise ValueError("BOT_TOKEN not found in environment")
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
