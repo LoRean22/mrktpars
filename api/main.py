@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.users import router as users_router
 from api.searches import router as searches_router
 
+#from core.browser_manager import browser_manager
+
 app = FastAPI(title="MrktPars API")
 
 app.add_middleware(

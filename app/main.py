@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
+from core.browser_manager import browser_manager
+
 
 
 from api import users
@@ -26,10 +28,14 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await init_http_session()
+    await browser_manager.start()
+
 
 @app.on_event("shutdown")
 async def shutdown():
+    await browser_manager.stop()
     await close_http_session()
+
 
 # ----------------------------
 # Routers

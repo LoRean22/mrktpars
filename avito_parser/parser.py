@@ -3,150 +3,84 @@ import random
 import re
 from typing import List, Tuple
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs, urlencode
-
 from loguru import logger
-import core.http_client as http_client
 
+from core.browser_manager import browser_manager
 from avito_parser.models import AvitoItem
 
 MAX_ITEMS = 20
 
 
-def get_headers():
-    return {
-        "User-Agent": random.choice([
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-        ]),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "ru-RU,ru;q=0.9",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
-
-
 class AvitoParser:
 
-    def __init__(self, proxy: str | None = None):
-        self.proxy = proxy
-
-    def clean_url(self, url: str) -> str:
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        query["s"] = ["104"]
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
-
-    async def warmup(self, proxy_url: str | None):
-        """
-        Заходим на главную страницу для получения cookie
-        """
-        try:
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-
-            async with http_client.http_session.get(
-                "https://www.avito.ru/",
-                headers=get_headers(),
-                proxy=proxy_url
-            ) as response:
-                logger.info(f"[WARMUP] Status {response.status}")
-                await response.text()
-
-        except Exception as e:
-            logger.warning(f"[WARMUP] Failed: {e}")
+    def __init__(self, tg_id: int):
+        self.tg_id = tg_id
 
     async def parse_once(self, url: str) -> Tuple[List[AvitoItem], int]:
 
-        if http_client.http_session is None:
-            await http_client.init_http_session()
-
-        await asyncio.sleep(random.uniform(0.8, 1.8))  # human jitter
-
-        url = self.clean_url(url)
-
-        proxy_url = None
-        if self.proxy:
-            parts = self.proxy.split(":")
-            if len(parts) == 4:
-                ip, port, login, password = parts
-                proxy_url = f"http://{login}:{password}@{ip}:{port}"
-            elif len(parts) == 2:
-                ip, port = parts
-                proxy_url = f"http://{ip}:{port}"
-
-        logger.info(f"[PARSER] {url}")
-        if proxy_url:
-            logger.info(f"[PARSER] Proxy {proxy_url}")
-
-        # warm-up перед реальным запросом
-        await self.warmup(proxy_url)
+        context = await browser_manager.get_context(self.tg_id)
+        page = await context.new_page()
 
         try:
-            async with http_client.http_session.get(
-                url,
-                headers=get_headers(),
-                proxy=proxy_url
-            ) as response:
+            await asyncio.sleep(random.uniform(1.0, 3.0))
 
-                status = response.status
-                logger.info(f"[PARSER] Status {status}")
+            response = await page.goto(url, timeout=30000)
+            status = response.status if response else 0
 
-                if status != 200:
-                    return [], status
+            logger.info(f"[PLAYWRIGHT] Status {status}")
 
-                text = await response.text()
+            if status != 200:
+                await page.close()
+                return [], status
 
-                if "Доступ ограничен" in text:
-                    return [], 403
+            await page.wait_for_timeout(random.uniform(1500, 3000))
 
-                soup = BeautifulSoup(text, "lxml")
-                cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
+            html = await page.content()
+            soup = BeautifulSoup(html, "lxml")
 
-                items: List[AvitoItem] = []
+            cards = soup.select('[data-marker="item"]')[:MAX_ITEMS]
 
-                for card in cards:
-                    link = card.select_one('a[data-marker="item-title"]')
-                    if not link:
-                        continue
+            items: List[AvitoItem] = []
 
-                    href = link.get("href")
-                    if not href:
-                        continue
+            for card in cards:
+                link = card.select_one('a[data-marker="item-title"]')
+                if not link:
+                    continue
 
-                    if href.startswith("/"):
-                        href = "https://www.avito.ru" + href
+                href = link.get("href")
+                if not href:
+                    continue
 
-                    m = re.search(r'_(\d+)$', href.split("?")[0])
-                    if not m:
-                        continue
+                if href.startswith("/"):
+                    href = "https://www.avito.ru" + href
 
-                    item_id = m.group(1)
-                    title = link.get_text(strip=True)
+                m = re.search(r'_(\d+)$', href.split("?")[0])
+                if not m:
+                    continue
 
-                    price_tag = card.select_one('[data-marker="item-price"]')
-                    price = 0
-                    if price_tag:
-                        digits = "".join(c for c in price_tag.text if c.isdigit())
-                        if digits:
-                            price = int(digits)
+                item_id = m.group(1)
+                title = link.get_text(strip=True)
 
-                    items.append(
-                        AvitoItem(
-                            id=item_id,
-                            title=title,
-                            price=price,
-                            url=href
-                        )
+                price_tag = card.select_one('[data-marker="item-price"]')
+                price = 0
+                if price_tag:
+                    digits = "".join(c for c in price_tag.text if c.isdigit())
+                    if digits:
+                        price = int(digits)
+
+                items.append(
+                    AvitoItem(
+                        id=item_id,
+                        title=title,
+                        price=price,
+                        url=href
                     )
+                )
 
-                logger.info(f"[PARSER] Found {len(items)} items")
+            await page.close()
+            return items, 200
 
-                return items, 200
-
-        except asyncio.TimeoutError:
-            logger.warning("[PARSER] Timeout")
-            return [], 408
         except Exception as e:
-            logger.exception(f"[PARSER] Error: {e}")
+            logger.exception(f"[PLAYWRIGHT ERROR] {e}")
+            await page.close()
             return [], 500
