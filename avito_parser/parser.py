@@ -118,15 +118,16 @@ class AvitoParser:
 
     # ------------------------------------
 
-    def parse_once(self, url: str) -> List[AvitoItem]:
+    def parse_once(self, url: str):
 
-        time.sleep(random.uniform(2.0, 5.0))
+        # стартовая задержка
+        time.sleep(random.uniform(2.0, 4.0))
 
         url = self.clean_url(url)
 
-        # Первый запуск — делаем человеческую навигацию
+        # если первый запуск — прогреваем
         if self.dynamic_limit == 1:
-            self.human_navigation(url)
+            self.warmup(url)
 
         logger.info(f"[REQUESTS] Парсинг {url}")
 
@@ -134,25 +135,30 @@ class AvitoParser:
             response = self.session.get(url, timeout=20)
         except Exception as e:
             logger.warning(f"REQUEST ERROR: {e}")
-            return []
+            return [], 0
 
-        logger.info(f"[REQUESTS] Status {response.status_code}")
+        status = response.status_code
+        logger.info(f"[REQUESTS] Status {status}")
 
-        if response.status_code == 429:
+        if status == 429:
             logger.warning("IP забанен (429)")
-            return []
+            return [], 429
 
-        if response.status_code != 200:
-            return []
+        if status == 403:
+            logger.warning("403 Forbidden (proxy blocked or tunnel error)")
+            return [], 403
+
+        if status != 200:
+            return [], status
 
         if "Доступ ограничен" in response.text:
             logger.warning("Avito ограничил доступ")
-            return []
-
-        self.save_cookies()
+            return [], 403
 
         soup = BeautifulSoup(response.text, "lxml")
         cards = soup.select('[data-marker="item"]')
+
+        # динамический лимит
         cards = cards[:self.dynamic_limit]
 
         if self.dynamic_limit < self.max_limit:
@@ -190,7 +196,9 @@ class AvitoParser:
                         price = int(digits)
 
                 image_tag = card.select_one("img")
-                image_url = image_tag.get("src") if image_tag else None
+                image_url = None
+                if image_tag:
+                    image_url = image_tag.get("src")
 
                 items.append(
                     AvitoItem(
@@ -202,7 +210,8 @@ class AvitoParser:
                     )
                 )
 
-            except Exception:
-                continue
+            except Exception as e:
+                logger.exception(f"Ошибка карточки: {e}")
 
-        return items
+        return items, 200
+
