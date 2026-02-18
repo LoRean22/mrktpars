@@ -20,6 +20,10 @@ def get_connection():
 active_monitors = {}
 
 
+# -------------------------------------------------
+# PROXY ROTATION
+# -------------------------------------------------
+
 def get_next_proxy():
     connection = get_connection()
     try:
@@ -47,20 +51,26 @@ def get_next_proxy():
         connection.close()
 
 
-def format_message(item, seller_name, seller_type, seller_since):
+# -------------------------------------------------
+# MESSAGE FORMAT
+# -------------------------------------------------
+
+def format_message(item):
     return (
         f"📦 {item.title}\n"
         f"💰 {item.price} ₽\n\n"
-        f"👤 {seller_name or '—'}\n"
-        f"🏪 {seller_type or '—'}\n"
-        f"📅 {seller_since or '—'}\n\n"
         f"🔗 {item.url}"
     )
 
 
+# -------------------------------------------------
+# MONITOR WORKER
+# -------------------------------------------------
+
 async def monitor_worker(tg_id: int, search_url: str):
 
     print(f"[MONITOR START] {tg_id}")
+
     connection = get_connection()
 
     try:
@@ -68,17 +78,21 @@ async def monitor_worker(tg_id: int, search_url: str):
 
         while True:
 
+            # ---- если нет парсера → берём прокси ----
             if not parser:
                 proxy = get_next_proxy()
 
                 if not proxy:
+                    print("NO PROXY")
                     await asyncio.sleep(10)
                     continue
 
                 print(f"[{tg_id}] USING PROXY {proxy}")
                 parser = AvitoParser(proxy=proxy)
+
                 await asyncio.sleep(random.uniform(3, 6))
 
+            # ---- получаем уже известные ID один раз ----
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT item_id FROM parsed_items
@@ -88,6 +102,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
             items, status = parser.parse_once(search_url)
 
+            # ---- обработка 429 ----
             if status == 429:
                 print(f"[{tg_id}] 429 DETECTED → switching proxy")
                 parser = None
@@ -95,11 +110,14 @@ async def monitor_worker(tg_id: int, search_url: str):
                 continue
 
             if status != 200:
+                print(f"[{tg_id}] Status {status}")
                 await asyncio.sleep(random.uniform(10, 15))
                 continue
 
+            # ---- обработка новых объявлений ----
             for item in items:
 
+                # если объявление старое — прекращаем цикл
                 if item.id in known_ids:
                     break
 
@@ -110,17 +128,16 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id, datetime.now()))
                     connection.commit()
 
-                # 🔥 Заходим в карточку ТОЛЬКО для нового
-                full_url = f"https://www.avito.ru/{item.id}"
-                image_url, seller_name, seller_type, seller_since = parser.fetch_full_data(full_url)
+                print(f"[{tg_id}] NEW ITEM:", item.id)
 
                 send_message(
                     tg_id,
-                    format_message(item, seller_name, seller_type, seller_since),
-                    image_url
+                    format_message(item),
+                    item.image_url
                 )
 
-            await asyncio.sleep(random.uniform(55, 65))
+            # ---- человекоподобная пауза ----
+            await asyncio.sleep(random.uniform(35, 45))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
@@ -129,6 +146,10 @@ async def monitor_worker(tg_id: int, search_url: str):
         connection.close()
         active_monitors.pop(tg_id, None)
 
+
+# -------------------------------------------------
+# START / STOP
+# -------------------------------------------------
 
 def start_monitor(tg_id: int, url: str):
     if tg_id in active_monitors:
