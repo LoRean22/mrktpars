@@ -20,6 +20,10 @@ def get_connection():
 active_monitors = {}
 
 
+# -------------------------------------------------
+# PROXY ROTATION
+# -------------------------------------------------
+
 def get_next_proxy():
     connection = get_connection()
     try:
@@ -47,6 +51,10 @@ def get_next_proxy():
         connection.close()
 
 
+# -------------------------------------------------
+# MESSAGE FORMAT
+# -------------------------------------------------
+
 def format_message(item):
     return (
         f"📦 {item.title}\n"
@@ -55,20 +63,25 @@ def format_message(item):
     )
 
 
+# -------------------------------------------------
+# MONITOR WORKER
+# -------------------------------------------------
+
 async def monitor_worker(tg_id: int, search_url: str):
 
     print(f"[MONITOR START] {tg_id}")
+
     connection = get_connection()
 
     try:
         parser = None
-        proxy = None
 
         while True:
 
-            # если нет parser или словили 429 → берем новый прокси
+            # ---- если нет парсера → берём прокси ----
             if not parser:
                 proxy = get_next_proxy()
+
                 if not proxy:
                     print("NO PROXY")
                     await asyncio.sleep(10)
@@ -77,11 +90,19 @@ async def monitor_worker(tg_id: int, search_url: str):
                 print(f"[{tg_id}] USING PROXY {proxy}")
                 parser = AvitoParser(proxy=proxy)
 
-                # небольшой случайный прогрев
                 await asyncio.sleep(random.uniform(3, 6))
+
+            # ---- получаем уже известные ID один раз ----
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT item_id FROM parsed_items
+                    WHERE tg_id=%s
+                """, (tg_id,))
+                known_ids = {row["item_id"] for row in cursor.fetchall()}
 
             items, status = parser.parse_once(search_url)
 
+            # ---- обработка 429 ----
             if status == 429:
                 print(f"[{tg_id}] 429 DETECTED → switching proxy")
                 parser = None
@@ -93,21 +114,14 @@ async def monitor_worker(tg_id: int, search_url: str):
                 await asyncio.sleep(random.uniform(10, 15))
                 continue
 
-            # ---- обработка новых ----
+            # ---- обработка новых объявлений ----
             for item in items:
 
+                # если объявление старое — прекращаем цикл
+                if item.id in known_ids:
+                    break
+
                 with connection.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT id FROM parsed_items
-                        WHERE tg_id=%s AND item_id=%s
-                    """, (tg_id, item.id))
-
-                    exists = cursor.fetchone()
-
-                    # если объявление уже было — вообще не трогаем
-                    if exists:
-                        continue
-
                     cursor.execute("""
                         INSERT INTO parsed_items (tg_id, item_id, created_at)
                         VALUES (%s, %s, %s)
@@ -116,15 +130,14 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 print(f"[{tg_id}] NEW ITEM:", item.id)
 
-                # отправляем фото только сейчас
                 send_message(
                     tg_id,
                     format_message(item),
                     item.image_url
                 )
 
-            # человекоподобная пауза
-            await asyncio.sleep(random.uniform(35, 45))
+            # ---- человекоподобная пауза ----
+            await asyncio.sleep(random.uniform(45, 55))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
@@ -133,6 +146,10 @@ async def monitor_worker(tg_id: int, search_url: str):
         connection.close()
         active_monitors.pop(tg_id, None)
 
+
+# -------------------------------------------------
+# START / STOP
+# -------------------------------------------------
 
 def start_monitor(tg_id: int, url: str):
     if tg_id in active_monitors:
