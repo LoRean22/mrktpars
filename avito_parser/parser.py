@@ -13,9 +13,6 @@ from avito_parser.models import AvitoItem
 
 FIXED_ITEMS_LIMIT = 7
 
-MAX_ITEMS_LIMIT = 7
-MIN_ITEMS_LIMIT = 4
-
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
@@ -61,15 +58,12 @@ class AvitoParser:
             })
 
         # === COOKIE STORAGE PER PROXY ===
-        self.cookie_file = os.path.join(
-            COOKIE_DIR,
-            f"{proxy.replace(':','_') if proxy else 'no_proxy'}.pkl"
-        )
+        proxy_name = proxy.replace(":", "_") if proxy else "no_proxy"
+        self.cookie_file = os.path.join(COOKIE_DIR, f"{proxy_name}.pkl")
 
         self.load_cookies()
 
-
-    # ------------------------------------
+    # ------------------------------------------------
 
     def load_cookies(self):
         if os.path.exists(self.cookie_file):
@@ -87,28 +81,7 @@ class AvitoParser:
         except:
             pass
 
-    # ------------------------------------
-
-    def human_navigation(self, url: str):
-        """
-        Имитируем поведение человека:
-        главная -> регион -> категория
-        """
-        try:
-            logger.info("Human navigation start")
-
-            self.session.get("https://www.avito.ru", timeout=15)
-            time.sleep(random.uniform(1.5, 3.0))
-
-            parsed = urlparse(url)
-            region_url = f"{parsed.scheme}://{parsed.netloc}"
-            self.session.get(region_url, timeout=15)
-            time.sleep(random.uniform(1.5, 3.0))
-
-        except Exception as e:
-            logger.warning(f"Navigation error: {e}")
-
-    # ------------------------------------
+    # ------------------------------------------------
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -116,7 +89,29 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    # ------------------------------------
+    # ------------------------------------------------
+    # 🔥 Получение оригинального фото
+    # ------------------------------------------------
+
+    def fetch_full_image(self, item_url: str) -> str | None:
+        try:
+            r = self.session.get(item_url, timeout=20)
+            if r.status_code != 200:
+                return None
+
+            soup = BeautifulSoup(r.text, "lxml")
+
+            og_image = soup.select_one('meta[property="og:image"]')
+            if og_image:
+                return og_image.get("content")
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"IMAGE FETCH ERROR: {e}")
+            return None
+
+    # ------------------------------------------------
 
     def parse_once(self, url: str):
 
@@ -148,9 +143,11 @@ class AvitoParser:
         if "Доступ ограничен" in response.text:
             return [], 403
 
+        # сохраняем cookies после успешного захода
+        self.save_cookies()
+
         soup = BeautifulSoup(response.text, "lxml")
         cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
-
 
         items: List[AvitoItem] = []
 
@@ -183,8 +180,8 @@ class AvitoParser:
                     if digits:
                         price = int(digits)
 
-                image_tag = card.select_one("img")
-                image_url = image_tag.get("src") if image_tag else None
+                # 🔥 получаем оригинальное фото
+                image_url = self.fetch_full_image(href)
 
                 items.append(
                     AvitoItem(
@@ -200,5 +197,3 @@ class AvitoParser:
                 logger.exception(f"Ошибка карточки: {e}")
 
         return items, 200
-
-
