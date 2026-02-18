@@ -11,6 +11,8 @@ import re
 
 from avito_parser.models import AvitoItem
 
+FIXED_ITEMS_LIMIT = 7
+
 MAX_ITEMS_LIMIT = 7
 MIN_ITEMS_LIMIT = 4
 
@@ -66,8 +68,6 @@ class AvitoParser:
 
         self.load_cookies()
 
-        self.dynamic_limit = 1
-        self.max_limit = random.randint(MIN_ITEMS_LIMIT, MAX_ITEMS_LIMIT)
 
     # ------------------------------------
 
@@ -149,12 +149,8 @@ class AvitoParser:
             return [], 403
 
         soup = BeautifulSoup(response.text, "lxml")
-        cards = soup.select('[data-marker="item"]')
+        cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
 
-        cards = cards[:self.dynamic_limit]
-
-        if self.dynamic_limit < self.max_limit:
-            self.dynamic_limit += 1
 
         items: List[AvitoItem] = []
 
