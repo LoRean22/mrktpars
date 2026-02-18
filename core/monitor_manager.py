@@ -137,7 +137,7 @@ async def monitor_worker(tg_id: int, search_url: str):
                 )
 
             # ---- человекоподобная пауза ----
-            await asyncio.sleep(random.uniform(45, 55))
+            await asyncio.sleep(random.uniform(25, 35))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")

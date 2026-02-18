@@ -11,7 +11,7 @@ import re
 
 from avito_parser.models import AvitoItem
 
-FIXED_ITEMS_LIMIT = 3
+FIXED_ITEMS_LIMIT = 4
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36",
