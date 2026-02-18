@@ -39,10 +39,9 @@ class AvitoParser:
             "Referer": "https://www.avito.ru/",
         })
 
-        # === PROXY ===
+        # --- Proxy ---
         if proxy:
             parts = proxy.split(":")
-
             if len(parts) == 4:
                 ip, port, login, password = parts
                 proxy_url = f"http://{login}:{password}@{ip}:{port}"
@@ -57,10 +56,9 @@ class AvitoParser:
                 "https": proxy_url,
             })
 
-        # === COOKIE STORAGE PER PROXY ===
+        # --- Cookie per proxy ---
         proxy_name = proxy.replace(":", "_") if proxy else "no_proxy"
         self.cookie_file = os.path.join(COOKIE_DIR, f"{proxy_name}.pkl")
-
         self.load_cookies()
 
     # ------------------------------------------------
@@ -90,26 +88,46 @@ class AvitoParser:
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
     # ------------------------------------------------
-    # 🔥 Получение оригинального фото
+    # 🔥 Получение фото + данных продавца
     # ------------------------------------------------
 
-    def fetch_full_image(self, item_url: str) -> str | None:
+    def fetch_full_data(self, item_url: str):
         try:
+            time.sleep(random.uniform(1.5, 2.5))
+
             r = self.session.get(item_url, timeout=20)
             if r.status_code != 200:
-                return None
+                return None, None, None, None
 
             soup = BeautifulSoup(r.text, "lxml")
 
+            # Фото (оригинал)
             og_image = soup.select_one('meta[property="og:image"]')
-            if og_image:
-                return og_image.get("content")
+            image_url = og_image.get("content") if og_image else None
 
-            return None
+            # Имя продавца
+            seller_name = None
+            seller_tag = soup.select_one('[data-marker="seller-info/name"]')
+            if seller_tag:
+                seller_name = seller_tag.get_text(strip=True)
+
+            # Тип продавца
+            seller_type = None
+            seller_type_tag = soup.select_one('[data-marker="seller-info/type"]')
+            if seller_type_tag:
+                seller_type = seller_type_tag.get_text(strip=True)
+
+            # Дата регистрации
+            seller_since = None
+            seller_since_tag = soup.find(string=lambda t: "На Авито с" in t if t else False)
+            if seller_since_tag:
+                seller_since = seller_since_tag.strip()
+
+            return image_url, seller_name, seller_type, seller_since
 
         except Exception as e:
-            logger.warning(f"IMAGE FETCH ERROR: {e}")
-            return None
+            logger.warning(f"FULL DATA ERROR: {e}")
+            return None, None, None, None
 
     # ------------------------------------------------
 
@@ -134,7 +152,6 @@ class AvitoParser:
             return [], 429
 
         if status == 403:
-            logger.warning("403 Forbidden")
             return [], 403
 
         if status != 200:
@@ -143,7 +160,6 @@ class AvitoParser:
         if "Доступ ограничен" in response.text:
             return [], 403
 
-        # сохраняем cookies после успешного захода
         self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -180,16 +196,13 @@ class AvitoParser:
                     if digits:
                         price = int(digits)
 
-                # 🔥 получаем оригинальное фото
-                image_url = self.fetch_full_image(href)
-
                 items.append(
                     AvitoItem(
                         id=item_id,
                         title=title,
                         price=price,
                         url=short_url,
-                        image_url=image_url
+                        image_url=None
                     )
                 )
 
