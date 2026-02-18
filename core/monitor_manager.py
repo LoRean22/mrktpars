@@ -95,6 +95,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
             # ---- обработка новых ----
             for item in items:
+
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         SELECT id FROM parsed_items
@@ -102,6 +103,8 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id))
 
                     exists = cursor.fetchone()
+
+                    # если объявление уже было — вообще не трогаем
                     if exists:
                         continue
 
@@ -111,7 +114,14 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item.id, datetime.now()))
                     connection.commit()
 
-                send_message(tg_id, format_message(item), item.image_url)
+                print(f"[{tg_id}] NEW ITEM:", item.id)
+
+                # отправляем фото только сейчас
+                send_message(
+                    tg_id,
+                    format_message(item),
+                    item.image_url
+                )
 
             # человекоподобная пауза
             await asyncio.sleep(random.uniform(35, 45))
