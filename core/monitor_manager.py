@@ -52,18 +52,6 @@ def get_next_proxy():
 
 
 # -------------------------------------------------
-# MESSAGE FORMAT
-# -------------------------------------------------
-
-def format_message(item):
-    return (
-        f"📦 {item.title}\n"
-        f"💰 {item.price} ₽\n\n"
-        f"🔗 {item.url}"
-    )
-
-
-# -------------------------------------------------
 # MONITOR WORKER
 # -------------------------------------------------
 
@@ -75,11 +63,11 @@ async def monitor_worker(tg_id: int, search_url: str):
 
     try:
         parser = None
-        first_run = True  # 🔥 флаг первого захода
+        first_run = True
 
         while True:
 
-            # ---- если нет парсера → берём прокси ----
+            # --- создаём парсер если его нет ---
             if not parser:
                 proxy = get_next_proxy()
 
@@ -93,7 +81,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 await asyncio.sleep(random.uniform(3, 6))
 
-            # ---- получаем уже известные ID ----
+            # --- получаем уже сохранённые ID ---
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT item_id FROM parsed_items
@@ -101,9 +89,9 @@ async def monitor_worker(tg_id: int, search_url: str):
                 """, (tg_id,))
                 known_ids = {row["item_id"] for row in cursor.fetchall()}
 
-            id_list, status = parser.parse_once(search_url)
+            cards, status = parser.parse_once(search_url)
 
-            # ---- обработка 429 ----
+            # --- обработка 429 ---
             if status == 429:
                 print(f"[{tg_id}] 429 DETECTED → switching proxy")
                 parser = None
@@ -119,8 +107,8 @@ async def monitor_worker(tg_id: int, search_url: str):
             # 🔥 ПЕРВЫЙ ЗАХОД — только запоминаем самый новый ID
             # -------------------------------------------------
             if first_run:
-                if id_list:
-                    newest_id, _ = id_list[0]
+                if cards:
+                    newest_id = cards[0]["id"]
 
                     if newest_id not in known_ids:
                         with connection.cursor() as cursor:
@@ -139,16 +127,27 @@ async def monitor_worker(tg_id: int, search_url: str):
             # -------------------------------------------------
             # 🔥 ОБРАБОТКА НОВЫХ ОБЪЯВЛЕНИЙ
             # -------------------------------------------------
-            for item_id, href in id_list:
+            for card in cards:
 
-                # если объявление уже было — дальше всё старое
+                item_id = card["id"]
+                href = card["href"]
+                title = card["title"]
+                price = card["price"]
+
+                # если уже было — дальше всё старое
                 if item_id in known_ids:
                     break
 
-                full_item = parser.parse_full_item(item_id, href)
-                if not full_item:
-                    continue
+                # получаем только картинку
+                image_url = None
+                try:
+                    full_item = parser.parse_full_item(item_id, href)
+                    if full_item:
+                        image_url = full_item.image_url
+                except Exception as e:
+                    print("FULL ITEM ERROR:", e)
 
+                # сохраняем в БД
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         INSERT INTO parsed_items (tg_id, item_id, created_at)
@@ -158,20 +157,23 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 print(f"[{tg_id}] NEW ITEM:", item_id)
 
+                # отправляем в Telegram
                 try:
                     send_message(
                         tg_id,
-                        format_message(full_item),
-                        full_item.image_url
+                        f"📦 {title}\n💰 {price} ₽\n\n🔗 https://avito.ru/{item_id}",
+                        image_url
                     )
                 except Exception as e:
                     print("TG SEND ERROR:", e)
 
-            # ---- пауза между циклами ----
             await asyncio.sleep(random.uniform(35, 45))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
+
+    except Exception as e:
+        print("CRITICAL MONITOR ERROR:", e)
 
     finally:
         connection.close()
