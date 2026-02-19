@@ -170,29 +170,46 @@ class AvitoParser:
 
     # ------------------------------------------------
 
-    def parse_once(self, url: str):
+def parse_once(self, url: str):
 
-        time.sleep(random.uniform(2.0, 4.0))
-        url = self.clean_url(url)
+    time.sleep(random.uniform(2.0, 4.0))
+    url = self.clean_url(url)
 
-        try:
-            response = self.session.get(url, timeout=20)
-        except Exception as e:
-            logger.warning(f"REQUEST ERROR: {e}")
-            return [], 0
+    logger.info(f"[REQUESTS] Парсинг {url}")
 
-        status = response.status_code
+    try:
+        response = self.session.get(url, timeout=20)
+    except Exception as e:
+        logger.warning(f"REQUEST ERROR: {e}")
+        return [], 0
 
-        if status == 429:
-            return [], 429
-        if status != 200:
-            return [], status
-        if "Доступ ограничен" in response.text:
-            return [], 403
+    status = response.status_code
+    logger.info(f"[REQUESTS] Status {status}")
 
-        self.save_cookies()
+    if status == 429:
+        logger.warning("IP забанен (429)")
+        return [], 429
 
-        soup = BeautifulSoup(response.text, "lxml")
-        id_list = self.extract_ids(soup)
+    if status == 302:
+        logger.warning("Redirect 302 detected")
 
-        return id_list, 200
+    if status == 403:
+        logger.warning("403 Forbidden")
+        return [], 403
+
+    if status != 200:
+        logger.warning(f"Unexpected status {status}")
+        return [], status
+
+    if "Доступ ограничен" in response.text:
+        logger.warning("Avito ограничил доступ")
+        return [], 403
+
+    self.save_cookies()
+
+    soup = BeautifulSoup(response.text, "lxml")
+    id_list = self.extract_ids(soup)
+
+    logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
+
+    return id_list, 200
