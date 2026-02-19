@@ -120,7 +120,6 @@ class AvitoParser:
     # ------------------------------------------------
 
     def parse_full_item(self, item_id: str, href: str) -> AvitoItem | None:
-
         try:
             r = self.session.get(href, timeout=20)
             if r.status_code != 200:
@@ -128,14 +127,29 @@ class AvitoParser:
 
             soup = BeautifulSoup(r.text, "lxml")
 
+            # ---- TITLE ----
             title_tag = soup.select_one("h1")
             title = title_tag.get_text(strip=True) if title_tag else "Без названия"
 
+            # ---- PRICE (надёжный способ) ----
             price = 0
-            price_meta = soup.select_one('meta[itemprop="price"]')
-            if price_meta:
-                price = int(price_meta.get("content", 0))
 
+            price_tag = soup.select_one('[data-marker="item-price"]')
+            if price_tag:
+                digits = "".join(c for c in price_tag.text if c.isdigit())
+                if digits:
+                    price = int(digits)
+            else:
+                # fallback через JSON
+                scripts = soup.find_all("script")
+                for s in scripts:
+                    if s.string and "price" in s.string:
+                        match = re.search(r'"price":\s?(\d+)', s.string)
+                        if match:
+                            price = int(match.group(1))
+                            break
+
+            # ---- IMAGE ----
             og_image = soup.select_one('meta[property="og:image"]')
             image_url = og_image.get("content") if og_image else None
 
@@ -152,6 +166,7 @@ class AvitoParser:
         except Exception as e:
             logger.warning(f"FULL ITEM ERROR: {e}")
             return None
+
 
     # ------------------------------------------------
 

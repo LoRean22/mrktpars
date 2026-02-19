@@ -111,10 +111,13 @@ async def monitor_worker(tg_id: int, search_url: str):
                 continue
 
             # 🔥 если первый id уже есть → вообще не парсим глубже
-            first_id = id_list[0][0]
-            if first_id in known_ids:
+            if not id_list:
                 await asyncio.sleep(random.uniform(35, 45))
                 continue
+
+            first_id = id_list[0][0]
+            
+
 
             # 🔥 парсим ТОЛЬКО новые
             for item_id, href in id_list:
@@ -133,13 +136,17 @@ async def monitor_worker(tg_id: int, search_url: str):
                     """, (tg_id, item_id, datetime.now()))
                     connection.commit()
 
-                print(f"[{tg_id}] NEW ITEM:", item_id)
+                print(f"[{tg_id}] NEW ITEM:", full_item.id)
 
-                send_message(
-                    tg_id,
-                    format_message(full_item),
-                    full_item.image_url
-                )
+                try:
+                    send_message(
+                        tg_id,
+                        format_message(full_item),
+                        full_item.image_url
+                    )
+                except Exception as e:
+                    print("TG SEND ERROR:", e)
+
 
             await asyncio.sleep(random.uniform(35, 45))
 
