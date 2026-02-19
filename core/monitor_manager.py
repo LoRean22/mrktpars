@@ -1,35 +1,48 @@
 import asyncio
 from datetime import datetime
-import pymysql
 import random
+import pymysql
+from typing import Optional, Set
 
 from avito_parser.parser import AvitoParser
 from core.telegram_sender import send_message
 
 
+# -------------------------------------------------
+# DB CONFIG
+# -------------------------------------------------
+
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "mrktpars_user",
+    "password": "StrongPassword123!",
+    "database": "mrktpars",
+    "cursorclass": pymysql.cursors.DictCursor,
+    "autocommit": True,
+}
+
+
 def get_connection():
-    return pymysql.connect(
-        host="localhost",
-        user="mrktpars_user",
-        password="StrongPassword123!",
-        database="mrktpars",
-        cursorclass=pymysql.cursors.DictCursor
-    )
+    return pymysql.connect(**DB_CONFIG)
 
 
-active_monitors = {}
+# -------------------------------------------------
+# ACTIVE TASKS
+# -------------------------------------------------
+
+active_monitors: dict[int, asyncio.Task] = {}
 
 
 # -------------------------------------------------
 # PROXY ROTATION
 # -------------------------------------------------
 
-def get_next_proxy():
+def get_next_proxy() -> Optional[str]:
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-                SELECT * FROM proxies
+                SELECT id, proxy FROM proxies
                 ORDER BY last_used_at IS NULL DESC, last_used_at ASC
                 LIMIT 1
             """)
@@ -42,11 +55,38 @@ def get_next_proxy():
                 UPDATE proxies
                 SET last_used_at=%s
                 WHERE id=%s
-            """, (datetime.now(), proxy["id"]))
-
-            connection.commit()
+            """, (datetime.utcnow(), proxy["id"]))
 
             return proxy["proxy"]
+    finally:
+        connection.close()
+
+
+# -------------------------------------------------
+# DB HELPERS
+# -------------------------------------------------
+
+def get_known_ids(tg_id: int) -> Set[str]:
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT item_id FROM parsed_items
+                WHERE tg_id=%s
+            """, (tg_id,))
+            return {row["item_id"] for row in cursor.fetchall()}
+    finally:
+        connection.close()
+
+
+def save_item(tg_id: int, item_id: str):
+    connection = get_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT IGNORE INTO parsed_items (tg_id, item_id, created_at)
+                VALUES (%s, %s, %s)
+            """, (tg_id, item_id, datetime.utcnow()))
     finally:
         connection.close()
 
@@ -55,11 +95,11 @@ def get_next_proxy():
 # MESSAGE FORMAT
 # -------------------------------------------------
 
-def format_message(item):
+def format_message(item) -> str:
     return (
-        f"📦 {item.title}\n"
+        f"<b>{item.title}</b>\n"
         f"💰 {item.price} ₽\n\n"
-        f"🔗 {item.url}"
+        f"<a href='{item.url}'>Открыть объявление</a>"
     )
 
 
@@ -70,111 +110,87 @@ def format_message(item):
 async def monitor_worker(tg_id: int, search_url: str):
 
     print(f"[MONITOR START] {tg_id}")
-
-    connection = get_connection()
+    first_run = True
+    parser: Optional[AvitoParser] = None
 
     try:
-        parser = None
-        first_run = True  # 🔥 флаг первого захода
-
         while True:
 
-            # ---- если нет парсера → берём прокси ----
+            # --- создаём парсер если его нет ---
             if not parser:
-                proxy = get_next_proxy()
+                proxy = await asyncio.to_thread(get_next_proxy)
 
                 if not proxy:
-                    print("NO PROXY")
+                    print("NO PROXY AVAILABLE")
                     await asyncio.sleep(10)
                     continue
 
                 print(f"[{tg_id}] USING PROXY {proxy}")
                 parser = AvitoParser(proxy=proxy)
 
-                await asyncio.sleep(random.uniform(3, 6))
+                await asyncio.sleep(random.uniform(2, 5))
 
-            # ---- получаем уже известные ID ----
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT item_id FROM parsed_items
-                    WHERE tg_id=%s
-                """, (tg_id,))
-                known_ids = {row["item_id"] for row in cursor.fetchall()}
+            # --- получаем ID ---
+            id_list, status = await asyncio.to_thread(
+                parser.parse_once, search_url
+            )
 
-            id_list, status = parser.parse_once(search_url)
-
-            # ---- обработка 429 ----
+            # --- обработка 429 ---
             if status == 429:
-                print(f"[{tg_id}] 429 DETECTED → switching proxy")
+                print(f"[{tg_id}] 429 → switching proxy")
+                parser.close()
                 parser = None
                 await asyncio.sleep(random.uniform(5, 10))
                 continue
 
             if status != 200:
-                print(f"[{tg_id}] Status {status}")
                 await asyncio.sleep(random.uniform(10, 15))
                 continue
 
-            # -------------------------------------------------
-            # 🔥 ПЕРВЫЙ ЗАХОД — только запоминаем самый новый ID
-            # -------------------------------------------------
+            known_ids = await asyncio.to_thread(get_known_ids, tg_id)
+
+            # --- FIRST RUN ---
             if first_run:
-                if id_list:
-                    newest_id, _ = id_list[0]
-
-                    if newest_id not in known_ids:
-                        with connection.cursor() as cursor:
-                            cursor.execute("""
-                                INSERT INTO parsed_items (tg_id, item_id, created_at)
-                                VALUES (%s, %s, %s)
-                            """, (tg_id, newest_id, datetime.now()))
-                            connection.commit()
-
-                        print(f"[{tg_id}] FIRST RUN → saved {newest_id}")
+                for item_id, _ in id_list:
+                    await asyncio.to_thread(save_item, tg_id, item_id)
 
                 first_run = False
-                await asyncio.sleep(random.uniform(35, 45))
+                await asyncio.sleep(random.uniform(30, 40))
                 continue
 
-            # -------------------------------------------------
-            # 🔥 ОБРАБОТКА НОВЫХ ОБЪЯВЛЕНИЙ
-            # -------------------------------------------------
+            # --- новые объявления ---
             for item_id, href in id_list:
 
-                # если объявление уже было — дальше всё старое
                 if item_id in known_ids:
                     break
 
-                full_item = parser.parse_full_item(item_id, href)
+                full_item = await asyncio.to_thread(
+                    parser.parse_full_item, item_id, href
+                )
+
                 if not full_item:
                     continue
 
-                with connection.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO parsed_items (tg_id, item_id, created_at)
-                        VALUES (%s, %s, %s)
-                    """, (tg_id, item_id, datetime.now()))
-                    connection.commit()
-
-                print(f"[{tg_id}] NEW ITEM:", item_id)
+                await asyncio.to_thread(save_item, tg_id, item_id)
 
                 try:
-                    send_message(
+                    await asyncio.to_thread(
+                        send_message,
                         tg_id,
                         format_message(full_item),
                         full_item.image_url
                     )
                 except Exception as e:
-                    print("TG SEND ERROR:", e)
+                    print("TG ERROR:", e)
 
-            # ---- пауза между циклами ----
-            await asyncio.sleep(random.uniform(35, 45))
+            await asyncio.sleep(random.uniform(30, 45))
 
     except asyncio.CancelledError:
         print(f"[MONITOR STOPPED] {tg_id}")
 
     finally:
-        connection.close()
+        if parser:
+            parser.close()
         active_monitors.pop(tg_id, None)
 
 
