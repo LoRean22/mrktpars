@@ -26,7 +26,6 @@ os.makedirs(COOKIE_DIR, exist_ok=True)
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
-
         self.proxy = proxy
         self.session = requests.Session()
 
@@ -57,10 +56,9 @@ class AvitoParser:
 
         proxy_name = proxy.replace(":", "_") if proxy else "no_proxy"
         self.cookie_file = os.path.join(COOKIE_DIR, f"{proxy_name}.pkl")
-
         self.load_cookies()
 
-    # -------------------------
+    # ------------------------------------------------
 
     def load_cookies(self):
         if os.path.exists(self.cookie_file):
@@ -78,7 +76,7 @@ class AvitoParser:
         except:
             pass
 
-    # -------------------------
+    # ------------------------------------------------
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -86,13 +84,12 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    # -------------------------
-    # 🔹 Получаем только ID и ссылки
-    # -------------------------
+    # ------------------------------------------------
+    # Получаем только ID и ссылки
+    # ------------------------------------------------
 
     def extract_ids(self, soup) -> List[Tuple[str, str]]:
         results = []
-
         cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
 
         for card in cards:
@@ -115,9 +112,9 @@ class AvitoParser:
 
         return results
 
-    # -------------------------
-    # 🔹 Полный парсинг (ТОЛЬКО для новых)
-    # -------------------------
+    # ------------------------------------------------
+    # Полный парсинг (только для новых)
+    # ------------------------------------------------
 
     def parse_full_item(self, item_id: str, href: str) -> AvitoItem | None:
         try:
@@ -127,16 +124,41 @@ class AvitoParser:
 
             soup = BeautifulSoup(r.text, "lxml")
 
+            # TITLE
             title_tag = soup.select_one("h1")
             title = title_tag.get_text(strip=True) if title_tag else "Без названия"
 
+            # PRICE
             price = 0
-            price_tag = soup.select_one('[data-marker="item-price"]')
-            if price_tag:
-                digits = "".join(c for c in price_tag.text if c.isdigit())
-                if digits:
-                    price = int(digits)
 
+            # 1️⃣ meta itemprop
+            meta_price = soup.select_one('meta[itemprop="price"]')
+            if meta_price and meta_price.get("content"):
+                try:
+                    price = int(meta_price.get("content"))
+                except:
+                    pass
+
+            # 2️⃣ data-marker
+            if price == 0:
+                price_tag = soup.select_one('[data-marker="item-price"]')
+                if price_tag:
+                    digits = "".join(c for c in price_tag.get_text() if c.isdigit())
+                    if digits:
+                        price = int(digits)
+
+            # 3️⃣ JSON fallback
+            if price == 0:
+                scripts = soup.find_all("script")
+                for s in scripts:
+                    if not s.string:
+                        continue
+                    match = re.search(r'"price"\s*:\s*(\d+)', s.string)
+                    if match:
+                        price = int(match.group(1))
+                        break
+
+            # IMAGE
             og_image = soup.select_one('meta[property="og:image"]')
             image_url = og_image.get("content") if og_image else None
 
@@ -154,9 +176,9 @@ class AvitoParser:
             logger.warning(f"FULL ITEM ERROR: {e}")
             return None
 
-    # -------------------------
-    # 🔹 Основной заход
-    # -------------------------
+    # ------------------------------------------------
+    # Основной заход
+    # ------------------------------------------------
 
     def parse_once(self, url: str):
 
@@ -179,14 +201,18 @@ class AvitoParser:
             return [], 429
 
         if status != 200:
+            logger.warning(f"Unexpected status {status}")
             return [], status
 
         if "Доступ ограничен" in response.text:
+            logger.warning("Avito ограничил доступ")
             return [], 403
 
         self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
         id_list = self.extract_ids(soup)
+
+        logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
 
         return id_list, 200
