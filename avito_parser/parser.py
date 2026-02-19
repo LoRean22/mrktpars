@@ -181,17 +181,32 @@ class AvitoParser:
                         price = int(digits)
 
                 # 🔥 получаем оригинальное фото
-                image_url = self.fetch_full_image(href)
+                # -------------------------
+                # Фото из карточки (без доп запроса)
+                # -------------------------
 
-                items.append(
-                    AvitoItem(
-                        id=item_id,
-                        title=title,
-                        price=price,
-                        url=short_url,
-                        image_url=image_url
+                image_url = None
+                img = card.select_one("img")
+
+                if img:
+                    image_url = (
+                        img.get("data-src") or
+                        img.get("srcset") or
+                        img.get("src")
                     )
-                )
+
+                    if image_url:
+                        # если есть srcset — берем первую ссылку
+                        if " " in image_url:
+                            image_url = image_url.split(" ")[0]
+
+                        # попытка увеличить размер
+                        image_url = re.sub(
+                            r"/\d+x\d+",
+                            "/1280x960",
+                            image_url
+                        )
+
 
             except Exception as e:
                 logger.exception(f"Ошибка карточки: {e}")
