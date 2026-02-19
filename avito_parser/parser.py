@@ -3,7 +3,7 @@ import random
 import time
 import os
 import pickle
-from typing import List
+from typing import List, Tuple
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -26,6 +26,7 @@ os.makedirs(COOKIE_DIR, exist_ok=True)
 class AvitoParser:
 
     def __init__(self, proxy: str | None = None):
+
         self.proxy = proxy
         self.session = requests.Session()
 
@@ -59,7 +60,7 @@ class AvitoParser:
 
         self.load_cookies()
 
-    # ------------------------------------------------
+    # -------------------------
 
     def load_cookies(self):
         if os.path.exists(self.cookie_file):
@@ -77,7 +78,7 @@ class AvitoParser:
         except:
             pass
 
-    # ------------------------------------------------
+    # -------------------------
 
     def clean_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -85,59 +86,38 @@ class AvitoParser:
         query["s"] = ["104"]
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
-    # ------------------------------------------------
-    # 🔹 Получаем карточки с страницы поиска
-    # ------------------------------------------------
+    # -------------------------
+    # 🔹 Получаем только ID и ссылки
+    # -------------------------
 
-    def extract_cards(self, soup) -> List[dict]:
+    def extract_ids(self, soup) -> List[Tuple[str, str]]:
         results = []
 
         cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
 
         for card in cards:
-            try:
-                link = card.select_one('a[data-marker="item-title"]')
-                if not link:
-                    continue
-
-                href = link.get("href")
-                if not href:
-                    continue
-
-                if href.startswith("/"):
-                    href = "https://www.avito.ru" + href
-
-                m = re.search(r'_(\d+)$', href.split("?")[0])
-                if not m:
-                    continue
-
-                item_id = m.group(1)
-                title = link.get_text(strip=True)
-
-                # 🔥 Цена берём только со страницы поиска
-                price = 0
-                price_tag = card.select_one('[data-marker="item-price"]')
-                if price_tag:
-                    digits = "".join(c for c in price_tag.get_text() if c.isdigit())
-                    if digits:
-                        price = int(digits)
-
-                results.append({
-                    "id": item_id,
-                    "href": href,
-                    "title": title,
-                    "price": price
-                })
-
-            except Exception as e:
-                logger.warning(f"Card parse error: {e}")
+            link = card.select_one('a[data-marker="item-title"]')
+            if not link:
                 continue
+
+            href = link.get("href")
+            if not href:
+                continue
+
+            if href.startswith("/"):
+                href = "https://www.avito.ru" + href
+
+            m = re.search(r'_(\d+)$', href.split("?")[0])
+            if not m:
+                continue
+
+            results.append((m.group(1), href))
 
         return results
 
-    # ------------------------------------------------
-    # 🔹 Полный парсинг (ТОЛЬКО для картинки)
-    # ------------------------------------------------
+    # -------------------------
+    # 🔹 Полный парсинг (ТОЛЬКО для новых)
+    # -------------------------
 
     def parse_full_item(self, item_id: str, href: str) -> AvitoItem | None:
         try:
@@ -147,7 +127,16 @@ class AvitoParser:
 
             soup = BeautifulSoup(r.text, "lxml")
 
-            # IMAGE
+            title_tag = soup.select_one("h1")
+            title = title_tag.get_text(strip=True) if title_tag else "Без названия"
+
+            price = 0
+            price_tag = soup.select_one('[data-marker="item-price"]')
+            if price_tag:
+                digits = "".join(c for c in price_tag.text if c.isdigit())
+                if digits:
+                    price = int(digits)
+
             og_image = soup.select_one('meta[property="og:image"]')
             image_url = og_image.get("content") if og_image else None
 
@@ -155,8 +144,8 @@ class AvitoParser:
 
             return AvitoItem(
                 id=item_id,
-                title="",
-                price=0,
+                title=title,
+                price=price,
                 url=short_url,
                 image_url=image_url
             )
@@ -165,9 +154,9 @@ class AvitoParser:
             logger.warning(f"FULL ITEM ERROR: {e}")
             return None
 
-    # ------------------------------------------------
+    # -------------------------
     # 🔹 Основной заход
-    # ------------------------------------------------
+    # -------------------------
 
     def parse_once(self, url: str):
 
@@ -189,23 +178,15 @@ class AvitoParser:
             logger.warning("IP забанен (429)")
             return [], 429
 
-        if status == 403:
-            logger.warning("403 Forbidden")
-            return [], 403
-
         if status != 200:
-            logger.warning(f"Unexpected status {status}")
             return [], status
 
         if "Доступ ограничен" in response.text:
-            logger.warning("Avito ограничил доступ")
             return [], 403
 
         self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
-        cards = self.extract_cards(soup)
+        id_list = self.extract_ids(soup)
 
-        logger.info(f"[REQUESTS] Найдено карточек: {len(cards)}")
-
-        return cards, 200
+        return id_list, 200
