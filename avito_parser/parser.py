@@ -3,7 +3,7 @@ import random
 import time
 import os
 import pickle
-from typing import List, Tuple
+from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -56,6 +56,7 @@ class AvitoParser:
 
         proxy_name = proxy.replace(":", "_") if proxy else "no_proxy"
         self.cookie_file = os.path.join(COOKIE_DIR, f"{proxy_name}.pkl")
+
         self.load_cookies()
 
     # ------------------------------------------------
@@ -85,35 +86,57 @@ class AvitoParser:
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
     # ------------------------------------------------
-    # Получаем только ID и ссылки
+    # 🔹 Получаем карточки с страницы поиска
     # ------------------------------------------------
 
-    def extract_ids(self, soup) -> List[Tuple[str, str]]:
+    def extract_cards(self, soup) -> List[dict]:
         results = []
+
         cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
 
         for card in cards:
-            link = card.select_one('a[data-marker="item-title"]')
-            if not link:
+            try:
+                link = card.select_one('a[data-marker="item-title"]')
+                if not link:
+                    continue
+
+                href = link.get("href")
+                if not href:
+                    continue
+
+                if href.startswith("/"):
+                    href = "https://www.avito.ru" + href
+
+                m = re.search(r'_(\d+)$', href.split("?")[0])
+                if not m:
+                    continue
+
+                item_id = m.group(1)
+                title = link.get_text(strip=True)
+
+                # 🔥 Цена берём только со страницы поиска
+                price = 0
+                price_tag = card.select_one('[data-marker="item-price"]')
+                if price_tag:
+                    digits = "".join(c for c in price_tag.get_text() if c.isdigit())
+                    if digits:
+                        price = int(digits)
+
+                results.append({
+                    "id": item_id,
+                    "href": href,
+                    "title": title,
+                    "price": price
+                })
+
+            except Exception as e:
+                logger.warning(f"Card parse error: {e}")
                 continue
-
-            href = link.get("href")
-            if not href:
-                continue
-
-            if href.startswith("/"):
-                href = "https://www.avito.ru" + href
-
-            m = re.search(r'_(\d+)$', href.split("?")[0])
-            if not m:
-                continue
-
-            results.append((m.group(1), href))
 
         return results
 
     # ------------------------------------------------
-    # Полный парсинг (только для новых)
+    # 🔹 Полный парсинг (ТОЛЬКО для картинки)
     # ------------------------------------------------
 
     def parse_full_item(self, item_id: str, href: str) -> AvitoItem | None:
@@ -124,40 +147,6 @@ class AvitoParser:
 
             soup = BeautifulSoup(r.text, "lxml")
 
-            # TITLE
-            title_tag = soup.select_one("h1")
-            title = title_tag.get_text(strip=True) if title_tag else "Без названия"
-
-            # PRICE
-            price = 0
-
-            # 1️⃣ meta itemprop
-            meta_price = soup.select_one('meta[itemprop="price"]')
-            if meta_price and meta_price.get("content"):
-                try:
-                    price = int(meta_price.get("content"))
-                except:
-                    pass
-
-            # 2️⃣ data-marker
-            if price == 0:
-                price_tag = soup.select_one('[data-marker="item-price"]')
-                if price_tag:
-                    digits = "".join(c for c in price_tag.get_text() if c.isdigit())
-                    if digits:
-                        price = int(digits)
-
-            # 3️⃣ JSON fallback
-            if price == 0:
-                scripts = soup.find_all("script")
-                for s in scripts:
-                    if not s.string:
-                        continue
-                    match = re.search(r'"price"\s*:\s*(\d+)', s.string)
-                    if match:
-                        price = int(match.group(1))
-                        break
-
             # IMAGE
             og_image = soup.select_one('meta[property="og:image"]')
             image_url = og_image.get("content") if og_image else None
@@ -166,8 +155,8 @@ class AvitoParser:
 
             return AvitoItem(
                 id=item_id,
-                title=title,
-                price=price,
+                title="",
+                price=0,
                 url=short_url,
                 image_url=image_url
             )
@@ -177,7 +166,7 @@ class AvitoParser:
             return None
 
     # ------------------------------------------------
-    # Основной заход
+    # 🔹 Основной заход
     # ------------------------------------------------
 
     def parse_once(self, url: str):
@@ -200,6 +189,10 @@ class AvitoParser:
             logger.warning("IP забанен (429)")
             return [], 429
 
+        if status == 403:
+            logger.warning("403 Forbidden")
+            return [], 403
+
         if status != 200:
             logger.warning(f"Unexpected status {status}")
             return [], status
@@ -211,8 +204,8 @@ class AvitoParser:
         self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
-        id_list = self.extract_ids(soup)
+        cards = self.extract_cards(soup)
 
-        logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
+        logger.info(f"[REQUESTS] Найдено карточек: {len(cards)}")
 
-        return id_list, 200
+        return cards, 200
