@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from core.monitor_manager import monitor_worker, active_monitors, stop_monitor
 from pydantic import BaseModel
 import pymysql
 from datetime import datetime, timedelta
@@ -259,3 +260,11 @@ def activate_key(data: ActivateKey):
 
     finally:
         connection.close()
+
+# ---------------- STOP PARSER ----------------
+
+@router.post("/users/stop-parser")
+def stop_parser(data: AdminRequest):
+    if data.tg_id in active_monitors:
+        stop_monitor(data.tg_id)
+    return {"status": "stopped"}
