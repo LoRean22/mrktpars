@@ -170,46 +170,46 @@ class AvitoParser:
 
     # ------------------------------------------------
 
-def parse_once(self, url: str):
+    def parse_once(self, url: str):
 
-    time.sleep(random.uniform(2.0, 4.0))
-    url = self.clean_url(url)
+        time.sleep(random.uniform(2.0, 4.0))
+        url = self.clean_url(url)
 
-    logger.info(f"[REQUESTS] Парсинг {url}")
+        logger.info(f"[REQUESTS] Парсинг {url}")
 
-    try:
-        response = self.session.get(url, timeout=20)
-    except Exception as e:
-        logger.warning(f"REQUEST ERROR: {e}")
-        return [], 0
+        try:
+            response = self.session.get(url, timeout=20)
+        except Exception as e:
+            logger.warning(f"REQUEST ERROR: {e}")
+            return [], 0
 
-    status = response.status_code
-    logger.info(f"[REQUESTS] Status {status}")
+        status = response.status_code
+        logger.info(f"[REQUESTS] Status {status}")
 
-    if status == 429:
-        logger.warning("IP забанен (429)")
-        return [], 429
+        if status == 429:
+            logger.warning("IP забанен (429)")
+            return [], 429
 
-    if status == 302:
-        logger.warning("Redirect 302 detected")
+        if status == 302:
+            logger.warning("Redirect 302 detected")
 
-    if status == 403:
-        logger.warning("403 Forbidden")
-        return [], 403
+        if status == 403:
+            logger.warning("403 Forbidden")
+            return [], 403
 
-    if status != 200:
-        logger.warning(f"Unexpected status {status}")
-        return [], status
+        if status != 200:
+            logger.warning(f"Unexpected status {status}")
+            return [], status
 
-    if "Доступ ограничен" in response.text:
-        logger.warning("Avito ограничил доступ")
-        return [], 403
+        if "Доступ ограничен" in response.text:
+            logger.warning("Avito ограничил доступ")
+            return [], 403
 
-    self.save_cookies()
+        self.save_cookies()
 
-    soup = BeautifulSoup(response.text, "lxml")
-    id_list = self.extract_ids(soup)
+        soup = BeautifulSoup(response.text, "lxml")
+        id_list = self.extract_ids(soup)
 
-    logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
+        logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
 
-    return id_list, 200
+        return id_list, 200
