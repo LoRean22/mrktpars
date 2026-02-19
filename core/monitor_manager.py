@@ -75,6 +75,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
     try:
         parser = None
+        first_run = True  # 🔥 флаг первого захода
 
         while True:
 
@@ -92,7 +93,7 @@ async def monitor_worker(tg_id: int, search_url: str):
 
                 await asyncio.sleep(random.uniform(3, 6))
 
-            # ---- получаем уже известные ID один раз ----
+            # ---- получаем уже известные ID ----
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT item_id FROM parsed_items
@@ -100,7 +101,7 @@ async def monitor_worker(tg_id: int, search_url: str):
                 """, (tg_id,))
                 known_ids = {row["item_id"] for row in cursor.fetchall()}
 
-            items, status = parser.parse_once(search_url)
+            id_list, status = parser.parse_once(search_url)
 
             # ---- обработка 429 ----
             if status == 429:
@@ -114,29 +115,59 @@ async def monitor_worker(tg_id: int, search_url: str):
                 await asyncio.sleep(random.uniform(10, 15))
                 continue
 
-            # ---- обработка новых объявлений ----
-            for item in items:
+            # -------------------------------------------------
+            # 🔥 ПЕРВЫЙ ЗАХОД — только запоминаем самый новый ID
+            # -------------------------------------------------
+            if first_run:
+                if id_list:
+                    newest_id, _ = id_list[0]
 
-                # если объявление старое — прекращаем цикл
-                if item.id in known_ids:
+                    if newest_id not in known_ids:
+                        with connection.cursor() as cursor:
+                            cursor.execute("""
+                                INSERT INTO parsed_items (tg_id, item_id, created_at)
+                                VALUES (%s, %s, %s)
+                            """, (tg_id, newest_id, datetime.now()))
+                            connection.commit()
+
+                        print(f"[{tg_id}] FIRST RUN → saved {newest_id}")
+
+                first_run = False
+                await asyncio.sleep(random.uniform(35, 45))
+                continue
+
+            # -------------------------------------------------
+            # 🔥 ОБРАБОТКА НОВЫХ ОБЪЯВЛЕНИЙ
+            # -------------------------------------------------
+            for item_id, href in id_list:
+
+                # если объявление уже было — дальше всё старое
+                if item_id in known_ids:
                     break
+
+                full_item = parser.parse_full_item(item_id, href)
+                if not full_item:
+                    continue
 
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         INSERT INTO parsed_items (tg_id, item_id, created_at)
                         VALUES (%s, %s, %s)
-                    """, (tg_id, item.id, datetime.now()))
+                    """, (tg_id, item_id, datetime.now()))
                     connection.commit()
 
-                print(f"[{tg_id}] NEW ITEM:", item.id)
+                print(f"[{tg_id}] NEW ITEM:", item_id)
 
-                send_message(
-                    tg_id,
-                    format_message(item),
-                    item.image_url
-                )
+                try:
+                    send_message(
+                        tg_id,
+                        format_message(full_item),
+                        full_item.image_url
+                    )
+                except Exception as e:
+                    print("TG SEND ERROR:", e)
 
-            # ---- человекоподобная пауза ----
+            # ---- пауза между циклами ----
             await asyncio.sleep(random.uniform(35, 45))
 
     except asyncio.CancelledError:
