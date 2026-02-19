@@ -3,7 +3,7 @@ import random
 import time
 import os
 import pickle
-from typing import List, Tuple
+from typing import List
 from bs4 import BeautifulSoup
 from loguru import logger
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -39,8 +39,10 @@ class AvitoParser:
             "Referer": "https://www.avito.ru/",
         })
 
+        # === PROXY ===
         if proxy:
             parts = proxy.split(":")
+
             if len(parts) == 4:
                 ip, port, login, password = parts
                 proxy_url = f"http://{login}:{password}@{ip}:{port}"
@@ -55,6 +57,7 @@ class AvitoParser:
                 "https": proxy_url,
             })
 
+        # === COOKIE STORAGE PER PROXY ===
         proxy_name = proxy.replace(":", "_") if proxy else "no_proxy"
         self.cookie_file = os.path.join(COOKIE_DIR, f"{proxy_name}.pkl")
 
@@ -87,86 +90,26 @@ class AvitoParser:
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
 
     # ------------------------------------------------
-    # 🔥 Получаем ТОЛЬКО ID объявлений
+    # 🔥 Получение оригинального фото
     # ------------------------------------------------
 
-    def extract_ids(self, soup) -> List[Tuple[str, str]]:
-        results = []
-
-        cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
-
-        for card in cards:
-            link = card.select_one('a[data-marker="item-title"]')
-            if not link:
-                continue
-
-            href = link.get("href")
-            if not href:
-                continue
-
-            if href.startswith("/"):
-                href = "https://www.avito.ru" + href
-
-            m = re.search(r'_(\d+)$', href.split("?")[0])
-            if not m:
-                continue
-
-            results.append((m.group(1), href))
-
-        return results
-
-    # ------------------------------------------------
-    # 🔥 Полный парсинг карточки (только для новых)
-    # ------------------------------------------------
-
-    def parse_full_item(self, item_id: str, href: str) -> AvitoItem | None:
+    def fetch_full_image(self, item_url: str) -> str | None:
         try:
-            r = self.session.get(href, timeout=20)
+            r = self.session.get(item_url, timeout=20)
             if r.status_code != 200:
                 return None
 
             soup = BeautifulSoup(r.text, "lxml")
 
-            # ---- TITLE ----
-            title_tag = soup.select_one("h1")
-            title = title_tag.get_text(strip=True) if title_tag else "Без названия"
-
-            # ---- PRICE (надёжный способ) ----
-            price = 0
-
-            price_tag = soup.select_one('[data-marker="item-price"]')
-            if price_tag:
-                digits = "".join(c for c in price_tag.text if c.isdigit())
-                if digits:
-                    price = int(digits)
-            else:
-                # fallback через JSON
-                scripts = soup.find_all("script")
-                for s in scripts:
-                    if s.string and "price" in s.string:
-                        match = re.search(r'"price":\s?(\d+)', s.string)
-                        if match:
-                            price = int(match.group(1))
-                            break
-
-            # ---- IMAGE ----
             og_image = soup.select_one('meta[property="og:image"]')
-            image_url = og_image.get("content") if og_image else None
+            if og_image:
+                return og_image.get("content")
 
-            short_url = f"https://avito.ru/{item_id}"
-
-            return AvitoItem(
-                id=item_id,
-                title=title,
-                price=price,
-                url=short_url,
-                image_url=image_url
-            )
-
-        except Exception as e:
-            logger.warning(f"FULL ITEM ERROR: {e}")
             return None
 
+        except Exception as e:
+            logger.warning(f"IMAGE FETCH ERROR: {e}")
+            return None
 
     # ------------------------------------------------
 
@@ -190,26 +133,67 @@ class AvitoParser:
             logger.warning("IP забанен (429)")
             return [], 429
 
-        if status == 302:
-            logger.warning("Redirect 302 detected")
-
         if status == 403:
             logger.warning("403 Forbidden")
             return [], 403
 
         if status != 200:
-            logger.warning(f"Unexpected status {status}")
             return [], status
 
         if "Доступ ограничен" in response.text:
-            logger.warning("Avito ограничил доступ")
             return [], 403
 
+        # сохраняем cookies после успешного захода
         self.save_cookies()
 
         soup = BeautifulSoup(response.text, "lxml")
-        id_list = self.extract_ids(soup)
+        cards = soup.select('[data-marker="item"]')[:FIXED_ITEMS_LIMIT]
 
-        logger.info(f"[REQUESTS] Найдено ID: {len(id_list)}")
+        items: List[AvitoItem] = []
 
-        return id_list, 200
+        for card in cards:
+            try:
+                link = card.select_one('a[data-marker="item-title"]')
+                if not link:
+                    continue
+
+                href = link.get("href")
+                if not href:
+                    continue
+
+                if href.startswith("/"):
+                    href = "https://www.avito.ru" + href
+
+                m = re.search(r'_(\d+)$', href.split("?")[0])
+                if not m:
+                    continue
+
+                item_id = m.group(1)
+                short_url = f"https://avito.ru/{item_id}"
+
+                title = link.get_text(strip=True)
+
+                price_tag = card.select_one('[data-marker="item-price"]')
+                price = 0
+                if price_tag:
+                    digits = "".join(c for c in price_tag.text if c.isdigit())
+                    if digits:
+                        price = int(digits)
+
+                # 🔥 получаем оригинальное фото
+                image_url = self.fetch_full_image(href)
+
+                items.append(
+                    AvitoItem(
+                        id=item_id,
+                        title=title,
+                        price=price,
+                        url=short_url,
+                        image_url=image_url
+                    )
+                )
+
+            except Exception as e:
+                logger.exception(f"Ошибка карточки: {e}")
+
+        return items, 200
